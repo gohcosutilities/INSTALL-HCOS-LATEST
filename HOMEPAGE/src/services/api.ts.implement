@@ -1,0 +1,125 @@
+// src/services/api.js
+import axios from 'axios'
+import { getToken, updateToken } from '@/services/auth.ts'
+import { useLoadingStore } from '@/store/loading'
+
+const API_BASE_URL = 'https://request.hcos.io' // Or process.env.API_URL
+
+const instance = axios.create({
+  baseURL: API_BASE_URL,
+})
+
+// Ensure token is fresh before each request
+instance.interceptors.request.use(
+  async (config) => {
+    const loadingStore = useLoadingStore()
+    loadingStore.show()
+
+    // Refresh token if needed
+    await updateToken(() => {})
+    const accessToken = getToken()
+
+    if (accessToken) {
+      config.headers['Authorization'] = `Bearer ${accessToken}`
+      localStorage.setItem('accessToken', accessToken)
+    }
+
+    // Handle Content-Type for FormData
+    if (config.data instanceof FormData) {
+      delete config.headers['Content-Type']
+    } else if (!config.headers['Content-Type']) {
+      config.headers['Content-Type'] = 'application/json'
+    }
+
+    return config
+  },
+  (error) => Promise.reject(error)
+)
+
+instance.interceptors.response.use(
+  (response) => {
+    const loadingStore = useLoadingStore()
+    loadingStore.hide()
+    return response
+  },
+  async (error) => {
+    const originalRequest = error.config
+    const loadingStore = useLoadingStore()
+    loadingStore.hide()
+
+    // Handle expired token (401)
+    if (error.response?.status === 401 && !originalRequest._retry) {
+      originalRequest._retry = true
+      try {
+        await updateToken(() => {})
+        const newToken = getToken()
+        originalRequest.headers['Authorization'] = `Bearer ${newToken}`
+        return instance(originalRequest)
+      } catch (refreshError) {
+        console.error('Failed to refresh token:', refreshError)
+        return Promise.reject(refreshError)
+      }
+    }
+
+    return Promise.reject(error)
+  }
+)
+
+// --- Helper functions ---
+const request = {
+  get: async (url, params) => {
+    const res = await instance.get(url, { params }) // ✅ no nesting
+    return res.data
+  },
+  post: async (url, data, isMultipart = false) => {
+    const config = isMultipart ? { headers: { 'Content-Type': 'multipart/form-data' } } : {}
+    const res = await instance.post(url, data, config)
+    return res.data
+  },
+  put: async (url, data) => {
+    const res = await instance.put(url, data)
+    return res.data
+  },
+  patch: async (url, data) => {
+    const res = await instance.patch(url, data)
+    return res.data
+  },
+  delete: async (url) => {
+    const res = await instance.delete(url)
+    return res.data
+  },
+  uploadFile: async (url, file) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    const res = await instance.post(url, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+    return res.data
+  },
+  uploadFiles: async (url, files, fieldName = 'files') => {
+    const formData = new FormData()
+    files.forEach(file => formData.append(fieldName, file))
+    const res = await instance.post(url, formData)
+    return res.data
+  },
+  downloadFile: async (url) => {
+    const res = await instance.get(url, { responseType: 'blob' })
+    const blob = new Blob([res.data], { type: res.headers['content-type'] })
+    const link = document.createElement('a')
+    link.href = window.URL.createObjectURL(blob)
+    link.setAttribute('download', 'file')
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  },
+  createWebSocket: (conversationId) => {
+    if (!conversationId) throw new Error('Conversation ID is required for WebSocket connection.')
+    const token = getToken()
+    if (!token) throw new Error('Authentication required for WebSocket connection')
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    return new WebSocket(`${protocol}//request.hcos.io/ws/chat/${conversationId}/?token=${token}`)
+  }
+}
+
+export default request

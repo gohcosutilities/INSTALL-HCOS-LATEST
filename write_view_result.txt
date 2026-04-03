@@ -1,0 +1,2 @@
+': -c: line 1: syntax error near unexpected token `newline'
+': -c: line 1: `cat > /tmp/kc_refresh_view.py << '

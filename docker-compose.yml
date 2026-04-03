@@ -1,0 +1,196 @@
+services:
+  # --- Existing Postgres & Infrastructure ---
+  postgres:
+    image: postgres:14-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_DB: ${BACKEND_DB:-hcos_db}
+      POSTGRES_USER: ${BACKEND_USER:-hcos_db_admin}
+      POSTGRES_PASSWORD: ${BACKEND_PASSWORD:-hcos_password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-multiple-databases.sh:/docker-entrypoint-initdb.d/init-multiple-databases.sh:ro
+    networks:
+      - keycloak_internal
+    extra_hosts:
+      - "postgres.local:host-gateway"  
+    ports:
+      - "5432:5432"
+      - "4000:4000"
+
+
+
+  redis:
+    image: redis:alpine
+    networks:
+      - keycloak_internal
+
+
+
+  # --- NEW: AlmaLinux 9.5 for CyberPanel ---
+  cyberpanel_host:
+    image: almalinux:9.5
+    container_name: cyberpanel_alma
+    # CyberPanel requires systemd and high privileges to manage the OS
+    privileged: true
+    cgroup: host  # Required for systemd to manage its own cgroup namespace
+    entrypoint: ["/bin/bash", "/opt/cyberpanel-entrypoint.sh"]
+    ports:
+      - "8090:8090"  # CyberPanel Admin
+      - "7080:7080"  # OpenLiteSpeed WebAdmin
+    environment:
+      - HOSTNAME_FOR_SSL=platform.hcos.io
+      - CLOUDFLARE_API_KEY=${CLOUDFLARE_FULL_API_KEY}
+      - CLOUDFLARE_API_EMAIL=${CLOUDFLARE_API_EMAIL}
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup  # Must be rw (not :ro) - systemd needs write access
+      - cyberpanel_data:/var/www
+      - cyberpanel_backups:/home             # Persistent backup storage (backups at /home/<domain>/backups/)
+      - cyberpanel_app:/mnt/cyberpanel_persist   # Staging for /usr/local/CyberCP (NOT mounted directly — breaks installer)
+      - cyberpanel_lsws:/usr/local/lsws          # OpenLiteSpeed server
+      - cyberpanel_lscp:/usr/local/lscp           # LSCPD binary + configs
+      - cyberpanel_mysql:/var/lib/mysql            # MariaDB data
+      - cyberpanel_etc:/etc/cyberpanel             # CyberPanel config + install marker
+      - cyberpanel_letsencrypt:/etc/letsencrypt    # Let's Encrypt certs (rw — certbot writes here)
+      - ./BACKEND-API-HCOM/CONTROL:/usr/local/CONTROL:ro    # Custom CyberPanel source (read-only)
+      - ./cyberpanel-entrypoint.sh:/opt/cyberpanel-entrypoint.sh:ro  # Auto-install entrypoint
+    networks:
+          keycloak_internal:
+            aliases:
+              - platform.hcos.io
+    deploy:
+      resources:
+        limits:
+          memory: 3G # CyberPanel is resource heavy; 3GB needed for dnf/certbot installs
+
+  # --- Existing Keycloak & Application Logic ---
+  keycloak:
+    build:
+      context: ./keycloak
+    container_name: keycloak
+    #command: start --optimized
+    environment:
+      - KC_PROXY_HEADERS=xforwarded
+      - KC_HOSTNAME=https://key.hcos.io
+      - KC_HOSTNAME_STRICT=false
+      - KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true
+      - KC_HTTP_ENABLED=true
+      - KC_HTTP_PORT=3001
+      - KEYCLOAK_ADMIN=admin
+      - KEYCLOAK_ADMIN_PASSWORD=${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      - KC_DB=postgres
+      - KC_DB_URL=jdbc:postgresql://postgres:5432/keycloakdb
+      - KC_DB_USERNAME=${BACKEND_USER:-hcos_db_admin}
+      - KC_DB_PASSWORD=${BACKEND_PASSWORD:-hcos_password_local}
+    ports:
+      - "3001:3001"
+    networks:
+      - keycloak_internal  
+    depends_on:
+      - postgres
+    volumes:
+      - ./keycloak_entrypoint.sh:/opt/keycloak_entrypoint.sh:ro  # entrypoint script (import or export master realm)
+      - ./keycloak/realm-export:/opt/keycloak/data/import:ro   # realm JSON files to import on startup (read-only)
+      - ./exported-realms:/opt/exported-realms:rw              # host-accessible dir for exported realms (read-write)
+    entrypoint: ["/opt/keycloak_entrypoint.sh"]  # Custom entrypoint: imports realm if found, otherwise exports current master realm
+
+
+
+  backend:
+    build:
+      context: ./BACKEND-API-HCOM
+    container_name: backend_service
+    command: daphne -v 2 -e ssl:port=5000:privateKey=/etc/letsencrypt/privkey.pem:certKey=/etc/letsencrypt/fullchain.pem hcos.asgi:application
+    volumes:
+      - ./BACKEND-API-HCOM:/app
+      - ./certbot/conf:/etc/letsencrypt:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - DATABASE_URL=postgres://${BACKEND_USER:-hcos_db_admin}:${BACKEND_PASSWORD:-hcos_password}@postgres:5432/${BACKEND_DB:-hcos_db}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - CHANNELS_REDIS_HOST=redis
+      - CHANNELS_REDIS_PORT=6379
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - keycloak_internal
+    ports:
+      - "5000:5000"
+
+  celery:
+    build:
+      context: ./BACKEND-API-HCOM
+    container_name: celery_worker
+    command: celery -A hcos worker -l info -E
+    volumes:
+      - ./BACKEND-API-HCOM:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - DATABASE_URL=postgres://${BACKEND_USER:-hcos_db_admin}:${BACKEND_PASSWORD:-hcos_password}@postgres:5432/${BACKEND_DB:-hcos_db}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+    depends_on:
+      - postgres
+      - redis
+      - backend
+    networks:
+      - keycloak_internal
+
+  celery_beat:
+    build:
+      context: ./BACKEND-API-HCOM
+    container_name: celery_beat
+    command: celery -A hcos beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    volumes:
+      - ./BACKEND-API-HCOM:/app
+    environment:
+      - DATABASE_URL=postgres://${BACKEND_USER:-hcos_db_admin}:${BACKEND_PASSWORD:-hcos_password}@postgres:5432/${BACKEND_DB:-hcos_db}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    depends_on:
+      - postgres
+      - redis
+      - backend
+      - celery
+    networks:
+      - keycloak_internal
+
+  nginx_main:
+    image: nginx:latest
+    container_name: nginx_main
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/templates:/etc/nginx/templates
+      - ./certbot/conf:/etc/letsencrypt:ro
+      - ./ONEDASH.HCOS.IO/dist:/var/www/onedash
+      - ./GOHCOSWEB/dist:/var/www/gohcos
+      - ./HOMEPAGE/dist:/var/www/homepage
+    extra_hosts:
+      - "internal.local:host-gateway"
+    networks:
+      - keycloak_internal
+
+  # ... [frontend, gohcos, and chat services remains the same] ...
+
+networks:
+  keycloak_internal:
+    driver: bridge
+    # ipam:
+    #   config:
+    #     - subnet: 172.18.0.0/16
+    #       gateway: 172.18.0.1
+
+volumes:
+  postgres_data:
+  postgres_chat_data:
+  cyberpanel_data:       # /var/www – website files
+  cyberpanel_app:        # staging at /mnt/cyberpanel_persist (NOT direct-mounted to avoid installer breakage)
+  cyberpanel_lsws:       # /usr/local/lsws – OpenLiteSpeed (450 MB)
+  cyberpanel_lscp:       # /usr/local/lscp – LSCPD (92 MB)
+  cyberpanel_mysql:      # /var/lib/mysql – MariaDB databases (199 MB)
+  cyberpanel_etc:        # /etc/cyberpanel – config files + install marker
+  cyberpanel_letsencrypt: # /etc/letsencrypt – Let's Encrypt certs (certbot managed)
+  cyberpanel_backups:    # /home – persistent domain home dirs + backup archives

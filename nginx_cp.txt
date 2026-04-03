@@ -1,0 +1,7 @@
+            # CyberPanel uses HTTPS internally on 8090
+            proxy_pass https://cyberpanel_host:8090;
+            # CyberPanel now uses the same Let's Encrypt cert (/etc/letsencrypt/fullchain.pem)
+            # so we can verify its certificate. The cert covers platform.hcos.io.
+            proxy_ssl_verify on;
+            proxy_ssl_trusted_certificate /etc/letsencrypt/fullchain.pem;
+            proxy_ssl_name platform.hcos.io;

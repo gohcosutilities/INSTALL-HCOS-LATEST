@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PayPal Test</title>
+    <script
+      src="https://www.paypal.com/sdk/js?client-id=AdBYIdazjZYEg8UcW8B_XbuI8cvtdz78gnb6rEVxib1dbt9H9ynLD3zK1zmvLzkV0g4W3f2d3yV5Dlmc&vault=true"
+      data-sdk-integration-source="button-factory"
+    ></script>
+  </head>
+  <body>
+    <div id="paypalContainer">
+      <h2>PayPal Test</h2>
+      <div id="modeInfo" style="margin-bottom: 20px; padding: 10px; border: 1px solid #ccc; border-radius: 5px; background-color: #f9f9f9;">
+        <strong>Current Mode:</strong> <span id="currentMode"></span><br>
+        <span id="modeDetails"></span>
+      </div>
+      <div id="paypal-button-container"></div>
+    </div>
+
+    <script>
+      // Configuration variables
+      const isSubscription = true; // Set to true for subscription, false for one-time payment
+      const paypal_plan_id = 'P-5ML016482M337062LNDFC5YY'; // PayPal plan ID for subscriptions
+      const amount = '10.00'; // Amount for one-time payments
+      const currency = 'USD'; // Currency code
+      const custom_id = '9KM71254B87466444'; // Custom tracking ID
+
+      // Update mode information display
+      document.addEventListener('DOMContentLoaded', function() {
+        const currentModeElement = document.getElementById('currentMode');
+        const modeDetailsElement = document.getElementById('modeDetails');
+        
+        if (isSubscription) {
+          currentModeElement.textContent = 'Subscription Mode';
+          currentModeElement.style.color = 'blue';
+          modeDetailsElement.innerHTML = `Plan ID: <code>${paypal_plan_id}</code><br>Custom ID: <code>${custom_id}</code>`;
+        } else {
+          currentModeElement.textContent = 'One-time Payment Mode';
+          currentModeElement.style.color = 'green';
+          modeDetailsElement.innerHTML = `Amount: <code>${amount} ${currency}</code><br>Custom ID: <code>${custom_id}</code>`;
+        }
+      });
+
+      // PayPal button configuration
+      const buttonConfig = {
+        onApprove(data, actions) {
+          if (isSubscription) {
+            console.log('Subscription approved. Subscription ID:', data.subscriptionID);
+            alert('Subscription created successfully! Subscription ID: ' + data.subscriptionID);
+            // Here you would typically send the subscription ID to your server for verification
+            // and to store the subscription details in your database
+          } else {
+            console.log('Order approved. Order ID:', data.orderID);
+            return actions.order.capture().then(function (details) {
+              console.log('Transaction completed by:', details.payer.name.given_name, details);
+              alert('Transaction completed by ' + details.payer.name.given_name + '!');
+            }).catch(function (error) {
+              console.error('Error capturing payment:', error);
+              alert('An error occurred while processing your payment. Please try again.');
+            });
+          }
+        },
+        onError(err) {
+          console.error('PayPal Button Error:', err);
+          alert('An error occurred with the PayPal button. Please try again later.');
+        }
+      };
+
+      // Add subscription or order creation logic based on configuration
+      if (isSubscription) {
+        buttonConfig.createSubscription = function(data, actions) {
+          console.log('Creating subscription with plan ID:', paypal_plan_id);
+          return actions.subscription.create({
+            plan_id: paypal_plan_id,
+            custom_id: custom_id,
+            vault: true,
+            application_context: {
+              shipping_preference: 'NO_SHIPPING'
+            }
+          });
+        };
+        buttonConfig.style = {
+          label: 'subscribe',
+          color: 'blue'
+        };
+      } else {
+        buttonConfig.createOrder = function(data, actions) {
+          console.log('Creating order...');
+          return actions.order.create({
+            purchase_units: [
+              {
+                amount: {
+                  value: amount,
+                  currency_code: currency,
+                },
+                description: 'Your Product or Service Name',
+                custom_id: custom_id,
+              },
+            ],
+            application_context: {
+              shipping_preference: 'NO_SHIPPING',
+            },
+          });
+        };
+        buttonConfig.style = {
+          label: 'pay',
+          color: 'gold'
+        };
+      }
+
+      paypal
+        .Buttons(buttonConfig)
+        .render('#paypal-button-container');
+    </script>
+  </body>
+</html>

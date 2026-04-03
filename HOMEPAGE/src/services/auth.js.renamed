@@ -1,0 +1,278 @@
+import { reactive } from 'vue'
+import Keycloak from 'keycloak-js'
+import router from '@/router'
+
+// --- Configuration ---
+const keycloakConfig = {
+  url: 'https://localhost:4000',  // import.meta.env.VITE_AUTHENTICATION_URL || 
+  realm: 'master',
+  clientId: import.meta.env.VITE_KEYCLOAK_CLIENT_ID || 'hcos-frontend'
+}
+
+// --- Internal State ---
+let keycloak = new Keycloak(keycloakConfig)
+let initPromise = null
+let refreshTimer = null
+let updatingToken = null // concurrency guard
+
+// --- Reactive Exported Auth State ---
+export const auth = reactive({
+  isAuthenticated: false,
+  userProfile: null,
+  token: null,
+  keycloak,
+  isInitialized: false
+})
+
+// --- Init ---
+/**
+ * Initializes Keycloak once. Call (and await) this before mounting the app.
+ * @param {Object} options
+ * @param {boolean} [options.loginRequired=false] Force login (login-required) instead of silent check (check-sso).
+ * 
+ * 
+ */
+
+
+function checkForAuthRedirect() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const hasAuthParams = urlParams.has('code') || urlParams.has('session_state') || 
+                       urlParams.has('state') || urlParams.has('iss');
+  
+  if (hasAuthParams) {
+    // Clean up URL parameters to prevent re-triggering
+    const cleanUrl = window.location.origin + window.location.pathname;
+    window.history.replaceState({}, document.title, cleanUrl);
+    
+    // Force re-initialization with login required to capture the auth state
+    return initKeycloak({ loginRequired: true });
+  }
+  return Promise.resolve(false);
+}
+
+export const initKeycloak = (optionsOrCallback = {}) => {
+  // Backward compatibility: if a function is passed treat it as callback.
+  let onAuthenticatedCallback = null
+  let loginRequired = false
+  if (typeof optionsOrCallback === 'function') {
+    onAuthenticatedCallback = optionsOrCallback
+  } else if (optionsOrCallback && typeof optionsOrCallback === 'object') {
+    ({ onAuthenticated: onAuthenticatedCallback, loginRequired = false } = optionsOrCallback)
+  }
+
+  const urlParams = new URLSearchParams(window.location.search)
+  const hasLoginError = urlParams.get('error') === 'login_required'
+  const comingFromRegister = !!localStorage.getItem('pending-registration')
+
+  const onLoadMode = loginRequired ? 'login-required' : 'check-sso'
+  let forceLoginAfterInit = false
+  if (hasLoginError || (comingFromRegister && !loginRequired)) {
+    // We'll attempt a silent init first; if not authenticated we trigger login.
+    forceLoginAfterInit = true
+  }
+
+  return keycloak.init({
+    onLoad: onLoadMode,
+    pkceMethod: 'S256',
+    flow: 'standard',
+    checkLoginIframe: false,
+    enableLogging: true,
+    useLocalStorage: true
+  }).then(async (authenticated) => {
+    if (authenticated) {
+      auth.isInitialized = true
+      auth.isAuthenticated = true
+      auth.token = keycloak.token
+      localStorage.setItem('kc-token', auth.token)
+      try {
+        const profile = await keycloak.loadUserProfile()
+        auth.userProfile = profile
+      } catch (_) {
+        auth.userProfile = null
+      }
+      startRefreshLoop()
+
+      // Clear registration flag if present
+      if (comingFromRegister) {
+        localStorage.removeItem('pending-registration')
+      }
+
+      // Post-auth redirect handling
+      const redirectPath = localStorage.getItem('post-auth-redirect')
+      if (redirectPath) {
+        localStorage.removeItem('post-auth-redirect')
+        const current = window.location.pathname + window.location.search
+        if (redirectPath !== current) {
+          try { router.replace(redirectPath) } catch (_) { /* ignore */ }
+        }
+      }
+
+      if (onAuthenticatedCallback) onAuthenticatedCallback()
+      return true
+    }
+
+    // Not authenticated after init.
+    if (forceLoginAfterInit) {
+      // Trigger interactive login.
+      await handleLogin()
+    } else if (loginRequired) {
+      await handleLogin()
+    } else {
+      console.warn('Not authenticated (passive check).')
+    }
+    return false
+  }).catch((error) => {
+    console.error('Authentication init failed', error)
+    throw error
+  })
+}
+
+
+
+function startRefreshLoop() {
+  if (refreshTimer) return
+  refreshTimer = setInterval(async () => {
+    // Passive refresh (do not force login if logged out)
+    if (!auth.isAuthenticated) return
+    try {
+      await updateToken(60)
+    } catch (e) {
+      console.error('Background token refresh failed', e)
+    }
+  }, 30000)
+}
+
+// --- Token Helpers ---
+export async function updateToken(minValidity = 60) {
+  if (!auth.isAuthenticated) return null
+  if (updatingToken) return updatingToken
+  updatingToken = keycloak.updateToken(minValidity)
+    .then(refreshed => {
+      if (refreshed) {
+        auth.token = keycloak.token
+        localStorage.setItem('kc-token', auth.token)
+      }
+      return auth.token
+    })
+    .catch(err => {
+      console.error('updateToken failed', err)
+      throw err
+    })
+    .finally(() => { updatingToken = null })
+  return updatingToken
+}
+
+export async function ensureFreshToken(minValidity = 30) {
+  if (!auth.isAuthenticated) return null
+  return updateToken(minValidity)
+}
+
+export function getAuthHeader() {
+  const token = getToken()
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
+// --- Auth Actions ---
+export async function handleLogin(options = {}) {
+  // Store current path for post-login redirect
+  const redirectPath = window.location.pathname + window.location.search
+  localStorage.setItem('post-auth-redirect', redirectPath)
+  
+  // This just triggers the login redirect.
+  await keycloak.login(options)
+}
+
+export async function loginAndRedirect(redirectPath) {
+  if (!redirectPath) {
+    console.error('loginAndRedirect requires a redirectPath.')
+    return
+  }
+  // Store the path to redirect to after login
+  localStorage.setItem('post-auth-redirect', redirectPath)
+  await handleLogin()
+}
+
+export async function handleRegister() {
+  await keycloak.register()
+}
+
+export async function handleLogout() {
+  try {
+    await keycloak.logout({ redirectUri: window.location.origin })
+  } finally {
+    clearAuthState()
+  }
+}
+
+function clearAuthState() {
+  auth.isAuthenticated = false
+  auth.userProfile = null
+  auth.token = null
+  localStorage.removeItem('kc-token')
+}
+
+// --- Lazy Authentication ---
+export async function ensureAuthenticated(redirectTo = null) {
+  if (auth.isAuthenticated) {
+    return true
+  }
+
+  if (!auth.isInitialized) {
+    await initKeycloak({ loginRequired: false })
+  }
+
+  if (!auth.isAuthenticated) {
+    // Store the intended destination
+    if (redirectTo) {
+      localStorage.setItem('post-auth-redirect', redirectTo)
+    } else {
+      localStorage.setItem('post-auth-redirect', window.location.pathname + window.location.search)
+    }
+    
+    // Redirect to login
+    await handleLogin()
+    return false // Will redirect, so we won't reach here
+  }
+  
+  return true
+}
+
+export async function getFreshToken() {
+  if (!auth.isAuthenticated) {
+    throw new Error('User not authenticated. Call ensureAuthenticated() first.')
+  }
+  return ensureFreshToken(30)
+}
+
+export const getToken = () => auth.token || keycloak.token || localStorage.getItem('kc-token')
+export const getUsername = () => keycloak.tokenParsed?.given_name
+export const getKeycloak = () => keycloak
+
+// Helper function for API calls that require authentication
+export async function withAuthentication(apiCall, options = {}) {
+  const { redirectOnFail = true, minValidity = 30 } = options
+  
+  try {
+    if (!auth.isAuthenticated) {
+      if (redirectOnFail) {
+        await ensureAuthenticated()
+        // The user will be redirected to login, so we don't continue execution
+        return
+      } else {
+        throw new Error('Authentication required')
+      }
+    }
+    
+    // Ensure we have a fresh token
+    await ensureFreshToken(minValidity)
+    
+    // Execute the API call
+    return await apiCall()
+  } catch (error) {
+    if (error.message === 'Authentication required' && redirectOnFail) {
+      await ensureAuthenticated()
+      return
+    }
+    return
+  }
+}

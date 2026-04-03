@@ -1,0 +1,3 @@
+[OK] Send SIGUSR1 to 47775
+RESTARTED
+active

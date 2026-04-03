@@ -1,0 +1,26 @@
+def backupManager(request, domain, subpath=None):
+    """Serve the Vue3 Backup & Restore SPA for a domain."""
+    try:
+        request.session['userID']
+    except KeyError:
+        return redirect(loadLoginPage)
+
+    # Resolve the server_id.  The system.Server model lives in the HCOS
+    # backend, not in CyberPanel, so we read it from a config file that the
+    # deploy process writes at /etc/cyberpanel/hcos_server_id.
+    server_id = ''
+    try:
+        with open('/etc/cyberpanel/hcos_server_id') as fh:
+            server_id = fh.read().strip()
+    except Exception:
+        pass
+
+    # Pass the Keycloak access token so the SPA can authenticate with the
+    # HCOS backend API (which lives on a different service).
+    kc_token = request.session.get('keycloak_access_token', '')
+
+    return httpProc(
+        request,
+        'websiteFunctions/backupManager.html',
+        {'domain': domain, 'server_id': server_id, 'kc_token': kc_token},
+    ).render()

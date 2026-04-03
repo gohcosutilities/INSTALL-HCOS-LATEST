@@ -1,0 +1,61 @@
+
+    # --- extract user claims ---
+    claims = None
+    if id_token:
+        claims = _decode_id_token(id_token)
+    if not claims:
+        try:
+            claims = jwt.decode(access_token, options={"verify_signature": False})
+        except Exception:
+            return _render_sso_error(request, "Token decode failed", "Could not decode the access token.")
+
+    # --- map to CyberPanel Administrator & build session ---
+    try:
+        admin = _find_or_create_administrator(claims)
+    except Exception as e:
+        logger.error("Failed to resolve Administrator: %s", e)
+        return _render_sso_error(request, "Administrator mapping failed", str(e))
+
+    request.session['userID'] = admin.pk
+    request.session['ipAddr'] = _get_client_ip(request)
+    request.session.set_expiry(43200)  # 12 hours GÇö CyberPanel default
+
+    # Stash tokens so other code can use them if needed
+    request.session['keycloak_access_token'] = access_token
+    if id_token:
+        request.session['keycloak_id_token'] = id_token
+    if refresh_token:
+        request.session['keycloak_refresh_token'] = refresh_token
+
+    logger.info(
+        "Keycloak SSO login OK GÇö Administrator '%s' (pk=%s)",
+        admin.userName, admin.pk,
+    )
+
+    # Redirect to CyberPanel dashboard
+    return HttpResponseRedirect('/base/')
+
+
+def keycloak_logout(request):
+    """Clear the CyberPanel session and redirect to Keycloak's /logout."""
+    id_token_hint = request.session.get('keycloak_id_token', '')
+
+    # Build the post-logout redirect back to CyberPanel root
+    scheme = 'https' if request.is_secure() else 'http'
+    host = request.get_host()
+    post_logout_redirect = f"{scheme}://{host}/"
+
+    # Flush the whole Django session
+    request.session.flush()
+
+    params = {
+        'client_id': KEYCLOAK_CLIENT_ID,
+        'post_logout_redirect_uri': post_logout_redirect,
+    }
+    if id_token_hint:
+        params['id_token_hint'] = id_token_hint
+
+    logout_url = f"{LOGOUT_ENDPOINT}?{urllib.parse.urlencode(params)}"
+    return HttpResponseRedirect(logout_url)
+
+

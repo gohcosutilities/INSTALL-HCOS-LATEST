@@ -1,0 +1,163 @@
+/**
+ * AWS-to-Tailwind CSS Variable Bridge
+ * Maps AWS CloudScape variables to Tailwind design tokens
+ * This allows components using AWS variables to work with Tailwind's design system
+ */
+
+@import 'tailwindcss';
+
+:root {
+  /* Color Palette - Mapped to Tailwind colors */
+  --aws-color-background-primary: theme('colors.white');
+  --aws-color-background-secondary: theme('colors.gray.50');
+  --aws-color-background-tertiary: theme('colors.gray.100');
+  --aws-color-background-container: theme('colors.white');
+  --aws-color-background-dropdown: theme('colors.white');
+  --aws-color-background-header: theme('colors.white');
+  
+  /* Text colors - Tailwind gray scale */
+  --aws-color-text-primary: theme('colors.gray.900');
+  --aws-color-text-secondary: theme('colors.gray.600');
+  --aws-color-text-tertiary: theme('colors.gray.500');
+  --aws-color-text-disabled: theme('colors.gray.400');
+  --aws-color-text-inverted: theme('colors.white');
+  
+  /* Border colors - Tailwind gray scale */
+  --aws-color-border-default: theme('colors.gray.200');
+  --aws-color-border-strong: theme('colors.gray.300');
+  --aws-color-border-divider: theme('colors.gray.200');
+  --aws-color-border-input: theme('colors.gray.300');
+  
+  /* Brand colors - Tailwind blue */
+  --aws-color-brand-primary: theme('colors.blue.600');
+  --aws-color-brand-primary-hover: theme('colors.blue.700');
+  --aws-color-brand-primary-active: theme('colors.blue.800');
+  --aws-color-brand-secondary: theme('colors.cyan.500');
+  
+  /* Status colors - Tailwind semantic colors */
+  --aws-color-success: theme('colors.green.600');
+  --aws-color-success-light: theme('colors.green.50');
+  --aws-color-warning: theme('colors.amber.500');
+  --aws-color-warning-light: theme('colors.amber.50');
+  --aws-color-error: theme('colors.red.600');
+  --aws-color-error-light: theme('colors.red.50');
+  --aws-color-info: theme('colors.blue.600');
+  --aws-color-info-light: theme('colors.blue.50');
+  
+  /* Shadows - Tailwind shadow scale */
+  --aws-shadow-small: theme('boxShadow.sm');
+  --aws-shadow-medium: theme('boxShadow.md');
+  --aws-shadow-large: theme('boxShadow.lg');
+  --aws-shadow-dropdown: theme('boxShadow.lg');
+  
+  /* Spacing scale - Tailwind spacing */
+  --aws-space-xxs: theme('spacing.1');    /* 4px */
+  --aws-space-xs: theme('spacing.2');     /* 8px */
+  --aws-space-s: theme('spacing.3');      /* 12px */
+  --aws-space-m: theme('spacing.4');      /* 16px */
+  --aws-space-l: theme('spacing.5');      /* 20px */
+  --aws-space-xl: theme('spacing.6');     /* 24px */
+  --aws-space-xxl: theme('spacing.8');    /* 32px */
+  --aws-space-xxxl: theme('spacing.10');  /* 40px */
+  
+  /* Border radius - Tailwind rounded */
+  --aws-border-radius-small: theme('borderRadius.DEFAULT');  /* 0.25rem */
+  --aws-border-radius-medium: theme('borderRadius.lg');      /* 0.5rem */
+  --aws-border-radius-large: theme('borderRadius.xl');       /* 0.75rem */
+  --aws-border-radius-full: theme('borderRadius.full');
+  
+  /* Typography - Tailwind text sizes */
+  --aws-font-family: theme('fontFamily.sans');
+  --aws-font-size-xs: theme('fontSize.xs');      /* 0.75rem / 12px */
+  --aws-font-size-s: theme('fontSize.sm');       /* 0.875rem / 14px */
+  --aws-font-size-m: theme('fontSize.base');     /* 1rem / 16px */
+  --aws-font-size-l: theme('fontSize.lg');       /* 1.125rem / 18px */
+  --aws-font-size-xl: theme('fontSize.xl');      /* 1.25rem / 20px */
+  --aws-font-size-xxl: theme('fontSize.2xl');    /* 1.5rem / 24px */
+  --aws-font-size-xxxl: theme('fontSize.3xl');   /* 1.875rem / 30px */
+  
+  /* Font weights - Tailwind font weights */
+  --aws-font-weight-normal: theme('fontWeight.normal');      /* 400 */
+  --aws-font-weight-medium: theme('fontWeight.medium');      /* 500 */
+  --aws-font-weight-semibold: theme('fontWeight.semibold');  /* 600 */
+  --aws-font-weight-bold: theme('fontWeight.bold');          /* 700 */
+  
+  /* Line heights */
+  --aws-line-height-tight: theme('lineHeight.tight');    /* 1.25 */
+  --aws-line-height-normal: theme('lineHeight.normal');  /* 1.5 */
+  --aws-line-height-relaxed: theme('lineHeight.relaxed'); /* 1.75 */
+  
+  /* Transitions - Tailwind durations */
+  --aws-transition-fast: theme('transitionDuration.150') cubic-bezier(0.4, 0, 0.2, 1);
+  --aws-transition-normal: theme('transitionDuration.200') cubic-bezier(0.4, 0, 0.2, 1);
+  --aws-transition-slow: theme('transitionDuration.300') cubic-bezier(0.4, 0, 0.2, 1);
+  
+  /* Z-index layers */
+  --aws-z-index-dropdown: 1000;
+  --aws-z-index-sticky: 1020;
+  --aws-z-index-modal-backdrop: 1040;
+  --aws-z-index-modal: 1050;
+  --aws-z-index-popover: 1060;
+  --aws-z-index-tooltip: 1070;
+}
+
+/* AWS Spinner using Tailwind */
+.aws-spinner {
+  display: inline-block;
+  width: 1.5rem;
+  height: 1.5rem;
+  border: 2px solid theme('colors.gray.200');
+  border-top-color: theme('colors.blue.600');
+  border-radius: theme('borderRadius.full');
+  animation: aws-spin 0.6s linear infinite;
+}
+
+@keyframes aws-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* AWS Badge Component - using Tailwind colors */
+.aws-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: theme('spacing.1') theme('spacing.2');
+  font-size: theme('fontSize.xs');
+  font-weight: theme('fontWeight.medium');
+  line-height: theme('lineHeight.tight');
+  border-radius: theme('borderRadius.full');
+  white-space: nowrap;
+}
+
+.aws-badge-success {
+  background-color: theme('colors.green.50');
+  color: theme('colors.green.700');
+}
+
+.aws-badge-warning {
+  background-color: theme('colors.amber.50');
+  color: theme('colors.amber.700');
+}
+
+.aws-badge-error {
+  background-color: theme('colors.red.50');
+  color: theme('colors.red.700');
+}
+
+.aws-badge-info {
+  background-color: theme('colors.blue.50');
+  color: theme('colors.blue.700');
+}
+
+/* Dark mode support */
+.dark {
+  --aws-color-background-primary: theme('colors.gray.900');
+  --aws-color-background-secondary: theme('colors.gray.800');
+  --aws-color-background-tertiary: theme('colors.gray.700');
+  --aws-color-background-container: theme('colors.gray.800');
+  --aws-color-text-primary: theme('colors.gray.100');
+  --aws-color-text-secondary: theme('colors.gray.300');
+  --aws-color-text-tertiary: theme('colors.gray.400');
+  --aws-color-border-default: theme('colors.gray.700');
+  --aws-color-border-strong: theme('colors.gray.600');
+  --aws-color-border-divider: theme('colors.gray.700');
+}

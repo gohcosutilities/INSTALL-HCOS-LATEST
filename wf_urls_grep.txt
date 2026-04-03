@@ -1,0 +1,3 @@
+46:    path('RestoreWPbackupNow', views.RestoreWPbackupNow, name='RestoreWPbackupNow'),
+203:    path('<domain>/backups', views.backupManager, name='backupManager'),
+204:    path('<domain>/backups/<path:subpath>', views.backupManager, name='backupManagerSub'),

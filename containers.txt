@@ -1,0 +1,8 @@
+NAMES             STATUS
+nginx_main        Up 17 hours
+celery_beat       Up 17 hours
+celery_worker     Up 17 hours
+backend_service   Up 17 hours
+postgres          Up 17 hours
+redis             Up 17 hours
+cyberpanel_alma   Up 17 hours

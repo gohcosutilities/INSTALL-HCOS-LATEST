@@ -1,0 +1,49 @@
+# ── Application repos (cloned by setup wizard, NOT part of this repo) ──
+BACKEND-API-HCOM/
+ONEDASH.HCOS.IO/
+ONEDASH.HCOS.IO-BUILD/
+HOMEPAGE/
+REACT-CHAT/
+SUPERADMIN/
+frontend/
+
+# ── Environment files (generated during deployment) ──
+.env
+.env.local
+.env.production
+.env.backup
+
+# ── Node modules ──
+node_modules/
+ONETIME/node_modules/
+
+# ── Build output (generated during Docker build) ──
+ONETIME/dist/
+
+# ── SSL certs (generated during setup) ──
+certbot/conf/live/
+certbot/conf/archive/
+certbot/conf/renewal/
+certbot/conf/accounts/
+certbot/cloudflare.ini
+
+# ── Python ──
+*.pyc
+__pycache__/
+.venv/
+*.egg-info/
+
+# ── OS / Editor ──
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# ── Misc ──
+tmpclaude-*
+nul
+*.exe
+docs/

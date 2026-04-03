@@ -1,0 +1,11 @@
+    path('getTerminalJWT', views.get_terminal_jwt, name='get_terminal_jwt'),
+
+    # Backup & Restore SPA
+    path('<domain>/backups', views.backupManager, name='backupManager'),
+    path('<domain>/backups/<path:subpath>', views.backupManager, name='backupManagerSub'),
+
+    # Catch all for domains
+    path('<domain>/<childDomain>', views.launchChild, name='launchChild'),
+    path('<domain>', views.domain, name='domain'),
+
+    path('get_website_resources/', views.get_website_resources, name='get_website_resources'),

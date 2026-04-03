@@ -1,0 +1,23 @@
+# Ignore node_modules (will be installed during Docker build)
+node_modules/
+
+# Ignore build output
+dist/
+
+# Ignore git
+.git/
+.gitignore
+
+# Ignore server directory in frontend build stage
+# (server files are copied explicitly in the production stage)
+server/node_modules/
+
+# Dev/IDE files
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db

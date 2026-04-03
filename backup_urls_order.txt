@@ -1,0 +1,3 @@
+203:    path('<domain>/backups/api/refresh-token', views.kc_refresh_token, name='kc_refresh_token'),
+204:    path('<domain>/backups', views.backupManager, name='backupManager'),
+205:    path('<domain>/backups/<path:subpath>', views.backupManager, name='backupManagerSub'),

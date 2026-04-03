@@ -1,0 +1,6 @@
+        return redirect(loadLoginPage)
+
+
+def backupManager(request, domain, subpath=None):
+    """Serve the Vue3 Backup & Restore SPA for a domain."""
+    try:

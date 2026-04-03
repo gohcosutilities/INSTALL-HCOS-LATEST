@@ -1,0 +1,5 @@
+pyc cleared
+[OK] litespeed: stopped.
+[OK] litespeed: pid=61484.
+STATUS
+litespeed is running with PID 61510.

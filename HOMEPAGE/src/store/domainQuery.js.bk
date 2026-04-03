@@ -1,0 +1,31 @@
+import { defineStore } from "pinia";
+
+export const useDomainStore = defineStore("domainStore", {
+  state: () => ({
+    registrationValues: {
+      searchedDomain: "",
+      domainExtension: "",
+      billingterm: "Annually",
+      intention: "null",
+
+      deleteDomain: false,
+      addToCart: {
+        new: false,
+        transfer: false,
+        existing: false,
+      },
+      nextStep: null,
+      eppCode: null,
+    },
+  }),
+
+  getters: {
+    getRegistrationValues: (state) => state.registrationValues, // Getter is fine
+  },
+
+  actions: {
+    updateRegistrationValues(regValObj) {
+      this.registrationValues = regValObj; // Action works as expected
+    },
+  },
+});

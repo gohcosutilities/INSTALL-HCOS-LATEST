@@ -1,0 +1,7 @@
+18:from authz import views as authz_views
+22:    path('auth/', include('authz.urls')),
+24:    path('authz/api/', include('authz.api_urls')),
+25:    path('', authz_views.keycloak_login_page, name='loadLoginPage'),
+26:    path('logout', authz_views.keycloak_logout, name='keycloak_logout'),
+33:    path('websites/', include('websiteFunctions.urls')),
+43:    path('backup/', include('backup.urls')),

@@ -1,0 +1,4 @@
+  File "<string>", line 34
+    
+    ^
+SyntaxError: EOF while scanning triple-quoted string literal

@@ -1,0 +1,4 @@
+essor(["Content-Type","Content-Length","Accept","Accept-Encoding","User-Agent","Authorization"]);v.reduceDescriptors(Fe.prototype,({value:e},t)=>{let n=t[0].toUpperCase()+t.
+(ql(t.baseURL,t.url,t.allowAbsoluteUrls),e.params,e.paramsSerializer),l&&i.set("Authorization","Basic "+btoa((l.username||"")+":"+(l.password?unescape(encodeURIComponent(l.p
+]'),It=li&&li.getAttribute("content")||"",ci=document.querySelector('meta[name="backup-kc-token"]'),ai=ci&&ci.getAttribute("content")||"";function pp(){const e=document.cookie
+csrftoken="));return e?e.split("=")[1]:""}const Yl={"X-CSRFToken":pp()};ai&&(Yl.Authorization=`Bearer ${ai}`);const hp=`https://${window.location.hostname}/api/admin/backups

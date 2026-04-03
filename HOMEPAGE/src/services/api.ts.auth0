@@ -1,0 +1,109 @@
+import { getAccessToken } from '@/plugins/auth'
+import axios from 'axios'
+
+const instance = axios.create({
+  baseURL: '/api', // Replace with your API base URL
+})
+
+instance.interceptors.request.use(
+  async (config) => {
+    const accessToken = await getAccessToken()
+    config.headers['Authorization'] = `Bearer ${accessToken}`
+    return config
+  },
+  (error) => {
+    // Do something with request error
+    return Promise.reject(error)
+  }
+)
+instance.interceptors.response.use(
+  (response) => {
+    // Any status code within the range of 2xx causes this function to trigger
+    // Do something with response data
+    return response
+  },
+  (error) => {
+    // Any status codes outside the range of 2xx cause this function to trigger
+    // Do something with response error
+    return Promise.reject(error)
+  }
+)
+export default instance
+export const get = async (url: string, params?: Record<string, unknown>) => {
+  try {
+    const response = await instance.get(url, { params })
+    return response.data
+  } catch (error) {
+    console.error('Error fetching data:', error)
+    throw error
+  }
+}
+export const post = async <T>(url: string, data?: T) => {
+  try {
+    const response = await instance.post(url, data)
+    return response.data
+  } catch (error) {
+    console.error('Error posting data:', error)
+    throw error
+  }
+}
+export const put = async <T>(url: string, data?: T) => {
+  try {
+    const response = await instance.put(url, data)
+    return response.data
+  } catch (error) {
+    console.error('Error putting data:', error)
+    throw error
+  }
+}
+export const del = async (url: string) => {
+  try {
+    const response = await instance.delete(url)
+    return response.data
+  } catch (error) {
+    console.error('Error deleting data:', error)
+    throw error
+  }
+}
+export const patch = async <T>(url: string, data?: T) => {
+  try {
+    const response = await instance.patch(url, data)
+    return response.data
+  } catch (error) {
+    console.error('Error patching data:', error)
+    throw error
+  }
+}
+export const uploadFile = async (url: string, file: File) => {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  try {
+    const response = await instance.post(url, formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    })
+    return response.data
+  } catch (error) {
+    console.error('Error uploading file:', error)
+    throw error
+  }
+}
+export const downloadFile = async (url: string) => {
+  try {
+    const response = await instance.get(url, {
+      responseType: 'blob', // Important for file download
+    })
+    const blob = new Blob([response.data], { type: response.headers['content-type'] })
+    const link = document.createElement('a')
+    link.href = window.URL.createObjectURL(blob)
+    link.setAttribute('download', 'file') // Set the default file name
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  } catch (error) {
+    console.error('Error downloading file:', error)
+    throw error
+  }
+}

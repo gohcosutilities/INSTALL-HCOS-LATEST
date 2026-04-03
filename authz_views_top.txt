@@ -1,0 +1,50 @@
+"""
+Keycloak OIDC Authorization Code flow for CyberPanel.
+
+Replaces CyberPanel's native login page with Keycloak SSO:
+  /auth/login/    GÂ∆ redirects to Keycloak authorization endpoint
+  /auth/callback/ GÂ∆ exchanges code for tokens, creates CyberPanel session
+  /auth/logout/   GÂ∆ clears session, redirects to Keycloak logout
+  /auth/sso/      GÂ∆ direct token-based SSO (for Vue frontend integration)
+  / (root)        GÂ∆ if authenticated go to dashboard, else redirect to Keycloak
+"""
+
+import json
+import logging
+import secrets
+import ssl
+import time
+import urllib.parse
+import urllib.request
+
+import jwt
+from jwt import PyJWKClient
+
+from django.conf import settings
+from django.http import HttpResponseRedirect, HttpResponse
+from django.shortcuts import render
+from django.views.decorators.csrf import csrf_exempt
+
+from loginSystem.models import Administrator
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Keycloak OIDC endpoints (derived from settings)
+# ---------------------------------------------------------------------------
+KEYCLOAK_SERVER_URL = getattr(settings, 'KEYCLOAK_SERVER_URL', 'https://key.hcos.io').rstrip('/')
+KEYCLOAK_PUBLIC_URL = getattr(settings, 'KEYCLOAK_PUBLIC_URL', KEYCLOAK_SERVER_URL).rstrip('/')
+KEYCLOAK_REALM = getattr(settings, 'KEYCLOAK_REALM_NAME', 'master')
+KEYCLOAK_CLIENT_ID = getattr(settings, 'KEYCLOAK_CLIENT_ID', 'hcos-backend')
+KEYCLOAK_CLIENT_SECRET = getattr(settings, 'KEYCLOAK_CLIENT_SECRET', '')
+
+# Browser-facing endpoints (user's browser redirects here)
+AUTH_ENDPOINT = f"{KEYCLOAK_PUBLIC_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/auth"
+LOGOUT_ENDPOINT = f"{KEYCLOAK_PUBLIC_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/logout"
+# Server-to-server endpoints (CyberPanel container calls these directly)
+TOKEN_ENDPOINT = f"{KEYCLOAK_SERVER_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/token"
+USERINFO_ENDPOINT = f"{KEYCLOAK_SERVER_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/userinfo"
+JWKS_URL = f"{KEYCLOAK_SERVER_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/certs"
+
+# SSL context for Keycloak HTTP calls
+_verify_ssl = getattr(settings, 'KEYCLOAK_VERIFY_SSL', 'true').lower() != 'false'

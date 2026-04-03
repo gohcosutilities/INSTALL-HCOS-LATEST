@@ -1,0 +1,5 @@
+total 156
+drwxr-xr-x 2 lscpd lscpd   4096 Mar 24 20:30 .
+drwxr-xr-x 3 lscpd lscpd   4096 Mar 24 04:58 ..
+-rw-r--r-- 1 lscpd lscpd   3829 Mar 24 20:29 index.css
+-rw-r--r-- 1 lscpd lscpd 144299 Mar 24 20:29 index.js

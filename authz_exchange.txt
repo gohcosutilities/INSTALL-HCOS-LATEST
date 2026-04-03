@@ -1,0 +1,46 @@
+    logger.info(
+        "Token exchange: client_id=%s, redirect_uri=%s, has_secret=%s",
+        KEYCLOAK_CLIENT_ID, redirect_uri, bool(KEYCLOAK_CLIENT_SECRET)
+    )
+    
+    data = urllib.parse.urlencode({
+        'grant_type': 'authorization_code',
+        'client_id': KEYCLOAK_CLIENT_ID,
+        'client_secret': KEYCLOAK_CLIENT_SECRET,
+        'code': code,
+        'redirect_uri': redirect_uri,
+    }).encode('utf-8')
+
+    req = urllib.request.Request(
+        TOKEN_ENDPOINT,
+        data=data,
+        headers={'Content-Type': 'application/x-www-form-urlencoded'},
+    )
+    try:
+        with urllib.request.urlopen(req, context=_ssl_ctx) as resp:
+            return json.loads(resp.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode('utf-8', errors='replace')
+        logger.error(
+            "Keycloak token exchange failed: HTTP %s\n"
+            "  Token endpoint: %s\n"
+            "  Client ID: %s\n"
+            "  Redirect URI: %s\n"
+            "  Has secret: %s\n"
+            "  Response body: %s",
+            e.code, TOKEN_ENDPOINT, KEYCLOAK_CLIENT_ID,
+            redirect_uri, bool(KEYCLOAK_CLIENT_SECRET), body
+        )
+        return None
+    except Exception as e:
+        logger.error("Keycloak token exchange error: %s", e)
+        return None
+
+
+def _decode_id_token(id_token_str):
+    """Decode & verify the ID-token returned by Keycloak."""
+    try:
+        if _verify_ssl:
+            jwks_client = PyJWKClient(JWKS_URL)
+        else:
+            jwks_client = PyJWKClient(JWKS_URL, ssl_context=_ssl_ctx)

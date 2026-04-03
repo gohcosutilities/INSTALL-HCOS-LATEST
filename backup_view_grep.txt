@@ -1,0 +1,3 @@
+2193:def backupManager(request, domain, subpath=None):
+2212:    kc_token = request.session.get('keycloak_access_token', '')
+2217:        {'domain': domain, 'server_id': server_id, 'kc_token': kc_token},
