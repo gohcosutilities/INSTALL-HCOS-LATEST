@@ -974,9 +974,12 @@ phase_nginx_config() {
 
     local conf=""
 
-    # Upstreams
-    conf+="upstream backend_upstream { server backend:5000; }\n"
-    conf+="upstream keycloak_backend { server keycloak:3001; }\n\n"
+    # Upstreams & cache
+    conf+="upstream keycloak_backend {\n"
+    conf+="    server keycloak:3001;\n"
+    conf+="}\n\n"
+    conf+="proxy_cache_path /tmp/nginx_proxy_cache levels=1:2 keys_zone=nginx_cache:10m max_size=1g\n"
+    conf+="                 inactive=60m use_temp_path=off;\n\n"
 
     # ── CORS origin whitelist map ──────────────────────────────────────────────
     # Maps the incoming Origin header to itself when it is an allowed origin, or
@@ -998,88 +1001,139 @@ phase_nginx_config() {
     conf+="}\n\n"
     # ──────────────────────────────────────────────────────────────────────────
 
-    # Helper to find root domain for a given domain
-    get_root_domain_for() {
-        local target_domain="$1"
-        local root_count
-        root_count=$(jq '.deployment.rootDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
-        for ((i=0; i<root_count; i++)); do
-            local rd
-            rd=$(jq -r ".deployment.rootDomains[$i].domain" "$CONFIG_FILE")
-            if [[ "$target_domain" == *"$rd" ]]; then
-                echo "$rd"
-                return
-            fi
-        done
-        # Fallback
-        echo "$target_domain" | rev | cut -d. -f1,2 | rev
-    }
+    # DNS resolver for Docker service discovery
+    conf+="resolver 127.0.0.11 valid=30s ipv6=off;\n\n"
 
-    # Keycloak Domains
+    # ── Platform / CyberPanel server block ──
+    local primary_domain
+    primary_domain=$(jq -r '.deployment.rootDomains[0].domain // "example.com"' "$CONFIG_FILE")
+    local primary_api_domain
+    primary_api_domain=$(jq -r '.deployment.apiDomains[0] // "api.example.com"' "$CONFIG_FILE")
+
+    conf+="server {\n"
+    conf+="    listen 8443 ssl;\n"
+    conf+="    server_name platform.${primary_domain};\n"
+    conf+="    ssl_certificate /etc/letsencrypt/fullchain.pem;\n"
+    conf+="    ssl_certificate_key /etc/letsencrypt/privkey.pem;\n"
+    conf+="    ssl_protocols TLSv1.2 TLSv1.3;\n"
+    conf+="    ssl_ciphers HIGH:!aNULL:!MD5;\n\n"
+    conf+="    location /api/admin/ {\n"
+    conf+="        proxy_pass http://backend:5000;\n"
+    conf+="        proxy_http_version 1.1;\n"
+    conf+="        proxy_set_header Host ${primary_api_domain};\n"
+    conf+="        proxy_set_header X-Real-IP \$remote_addr;\n"
+    conf+="        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;\n"
+    conf+="        proxy_set_header X-Forwarded-Proto \$scheme;\n"
+    conf+="    }\n\n"
+    conf+="    location / {\n"
+    conf+="        proxy_pass https://cyberpanel_host:8090;\n"
+    conf+="        proxy_ssl_verify off;\n"
+    conf+="        proxy_ssl_server_name on;\n"
+    conf+="        proxy_ssl_name platform.${primary_domain};\n"
+    conf+="        proxy_set_header Host \$host;\n"
+    conf+="        proxy_set_header X-Real-IP \$remote_addr;\n"
+    conf+="        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;\n"
+    conf+="        proxy_set_header X-Forwarded-Proto \$scheme;\n"
+    conf+="        proxy_http_version 1.1;\n"
+    conf+="        proxy_set_header Upgrade \$http_upgrade;\n"
+    conf+="        proxy_set_header Connection \"upgrade\";\n"
+    conf+="    }\n"
+    conf+="}\n\n"
+
+    # ── Keycloak Domains (enhanced with http2, session cache, buffer settings) ──
+    local kc_domains=""
     local kc_count=$(jq '.deployment.keycloakDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
     for ((i=0; i<kc_count; i++)); do
-        local kc_domain rd
+        local kc_domain
         kc_domain=$(jq -r ".deployment.keycloakDomains[$i]" "$CONFIG_FILE")
-        if [[ -z "$kc_domain" || "$kc_domain" == "null" ]]; then continue; fi
-        rd=$(get_root_domain_for "$kc_domain")
-
+        if [[ -n "$kc_domain" && "$kc_domain" != "null" ]]; then
+            kc_domains+="${kc_domains:+ }${kc_domain}"
+        fi
+    done
+    if [[ -n "$kc_domains" ]]; then
         conf+="server {\n"
-        conf+="    listen 443 ssl http2;\n"
-        conf+="    server_name ${kc_domain};\n"
-        conf+="    ssl_certificate /etc/letsencrypt/live/${rd}/fullchain.pem;\n"
-        conf+="    ssl_certificate_key /etc/letsencrypt/live/${rd}/privkey.pem;\n"
+        conf+="    listen 8443 ssl;\n"
+        conf+="    listen [::]:8443 ssl;\n"
+        conf+="    http2 on;\n"
+        conf+="    server_name ${kc_domains};\n"
+        conf+="    ssl_certificate /etc/letsencrypt/fullchain.pem;\n"
+        conf+="    ssl_certificate_key /etc/letsencrypt/privkey.pem;\n"
         conf+="    ssl_protocols TLSv1.2 TLSv1.3;\n"
-        conf+="    ssl_ciphers HIGH:!aNULL:!MD5;\n"
+        conf+="    ssl_ciphers ECDHE-RSA-AES256-GCM-SHA512:DHE-RSA-AES256-GCM-SHA512:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384;\n"
+        conf+="    ssl_prefer_server_ciphers off;\n"
+        conf+="    ssl_session_cache shared:SSL:10m;\n"
+        conf+="    ssl_session_timeout 10m;\n"
+        conf+="    proxy_read_timeout 86400;\n"
+        conf+="    proxy_send_timeout 86400;\n\n"
         conf+="    location / {\n"
-        conf+="        proxy_pass http://keycloak_backend;\n"
+        conf+="        set \$keycloak_upstream http://keycloak:3001;\n"
+        conf+="        proxy_pass \$keycloak_upstream;\n"
         conf+="        proxy_set_header Host \$host;\n"
         conf+="        proxy_set_header X-Real-IP \$remote_addr;\n"
         conf+="        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;\n"
         conf+="        proxy_set_header X-Forwarded-Proto \$scheme;\n"
+        conf+="        proxy_set_header X-Forwarded-Host \$host;\n"
+        conf+="        proxy_set_header X-Forwarded-Port \$server_port;\n"
+        conf+="        proxy_set_header X-Forwarded-Server \$host;\n"
         conf+="        proxy_set_header Upgrade \$http_upgrade;\n"
         conf+="        proxy_set_header Connection \"upgrade\";\n"
         conf+="        proxy_buffer_size 128k;\n"
         conf+="        proxy_buffers 4 256k;\n"
+        conf+="        proxy_busy_buffers_size 256k;\n"
+        conf+="        proxy_connect_timeout 90s;\n"
+        conf+="        proxy_send_timeout 90s;\n"
+        conf+="        proxy_read_timeout 90s;\n"
         conf+="    }\n"
         conf+="}\n\n"
-    done
+    fi
 
     # API Domains
     local api_count=$(jq '.deployment.apiDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
     for ((i=0; i<api_count; i++)); do
-        local api_domain rd
+        local api_domain
         api_domain=$(jq -r ".deployment.apiDomains[$i]" "$CONFIG_FILE")
         if [[ -z "$api_domain" || "$api_domain" == "null" ]]; then continue; fi
-        rd=$(get_root_domain_for "$api_domain")
 
         conf+="server {\n"
-        conf+="    listen 443 ssl;\n"
+        conf+="    listen 8443 ssl;\n"
         conf+="    server_name ${api_domain};\n"
-        conf+="    ssl_certificate /etc/letsencrypt/live/${rd}/fullchain.pem;\n"
-        conf+="    ssl_certificate_key /etc/letsencrypt/live/${rd}/privkey.pem;\n"
-        conf+="    ssl_protocols TLSv1.2 TLSv1.3;\n"
-        conf+="    ssl_ciphers HIGH:!aNULL:!MD5;\n"
+        conf+="    ssl_certificate /etc/letsencrypt/fullchain.pem;\n"
+        conf+="    ssl_certificate_key /etc/letsencrypt/privkey.pem;\n\n"
+        # WebSocket location
         conf+="    location /ws/ {\n"
-        conf+="        proxy_pass http://backend_upstream;\n"
+        conf+="        proxy_pass http://backend:5000;\n"
         conf+="        proxy_set_header Host \$host;\n"
         conf+="        proxy_set_header X-Real-IP \$remote_addr;\n"
         conf+="        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;\n"
         conf+="        proxy_set_header X-Forwarded-Proto https;\n"
+        conf+="        proxy_set_header Origin \$http_origin;\n"
         conf+="        proxy_http_version 1.1;\n"
         conf+="        proxy_set_header Upgrade \$http_upgrade;\n"
         conf+="        proxy_set_header Connection \"upgrade\";\n"
         conf+="        proxy_read_timeout 86400;\n"
         conf+="        proxy_send_timeout 86400;\n"
         conf+="        proxy_buffering off;\n"
-        conf+="    }\n"
+        conf+="    }\n\n"
+        # Django admin — never cache, always proxy directly to backend
+        conf+="    location /admin/ {\n"
+        conf+="        proxy_pass http://backend:5000;\n"
+        conf+="        proxy_http_version 1.1;\n"
+        conf+="        proxy_set_header Host \$host;\n"
+        conf+="        proxy_set_header X-Real-IP \$remote_addr;\n"
+        conf+="        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;\n"
+        conf+="        proxy_set_header X-Forwarded-Proto \$scheme;\n"
+        conf+="        proxy_set_header X-Request-From \"nginx\";\n"
+        conf+="        proxy_cache off;\n"
+        conf+="        proxy_no_cache 1;\n"
+        conf+="        proxy_cache_bypass 1;\n"
+        conf+="        proxy_pass_header Set-Cookie;\n"
+        conf+="        proxy_read_timeout 300s;\n"
+        conf+="        proxy_connect_timeout 60s;\n"
+        conf+="        proxy_send_timeout 300s;\n"
+        conf+="    }\n\n"
+        # Regular HTTP/API requests with caching
         conf+="    location / {\n"
-        # Use a variable flag so 204 only fires for *known* (whitelisted) origins.
-        # For own-domain tenants whose origin is not in the static map, $cors_origin
-        # is empty and the flag stays 0, so the request falls through to Django CORS.
-        conf+="        set \$do_cors_preflight 0;\n"
-        conf+="        if (\$request_method = 'OPTIONS') { set \$do_cors_preflight 1; }\n"
-        conf+="        if (\$cors_origin = \"\") { set \$do_cors_preflight 0; }\n"
-        conf+="        if (\$do_cors_preflight = 1) {\n"
+        conf+="        if (\$request_method = 'OPTIONS') {\n"
         conf+="            add_header 'Access-Control-Allow-Origin'      \"\$cors_origin\" always;\n"
         conf+="            add_header 'Access-Control-Allow-Credentials' 'true'         always;\n"
         conf+="            add_header 'Access-Control-Allow-Methods'     'GET, POST, PUT, PATCH, DELETE, OPTIONS' always;\n"
@@ -1087,15 +1141,19 @@ phase_nginx_config() {
         conf+="            add_header 'Access-Control-Max-Age'           '86400'        always;\n"
         conf+="            return 204;\n"
         conf+="        }\n"
-        conf+="        proxy_pass http://backend_upstream;\n"
+        conf+="        proxy_pass http://backend:5000;\n"
         conf+="        proxy_http_version 1.1;\n"
         conf+="        proxy_set_header Host \$host;\n"
         conf+="        proxy_set_header X-Real-IP \$remote_addr;\n"
         conf+="        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;\n"
         conf+="        proxy_set_header X-Forwarded-Proto \$scheme;\n"
-        # Explicitly forward the Origin header so Django corsheaders can
-        # validate it and attach Access-Control-Allow-Origin to the response.
         conf+="        proxy_set_header Origin \$http_origin;\n"
+        conf+="        proxy_cache nginx_cache;\n"
+        conf+="        proxy_cache_valid 200 302 10m;\n"
+        conf+="        proxy_cache_valid 404 1m;\n"
+        conf+="        proxy_cache_methods GET HEAD;\n"
+        conf+="        proxy_cache_use_stale error timeout updating http_500 http_502 http_503 http_504;\n"
+        conf+="        add_header X-Proxy-Cache \$upstream_cache_status always;\n"
         conf+="        proxy_read_timeout 300s;\n"
         conf+="        proxy_connect_timeout 60s;\n"
         conf+="        proxy_send_timeout 300s;\n"
@@ -1106,20 +1164,20 @@ phase_nginx_config() {
     # Frontend Domains
     local fe_count=$(jq '.deployment.frontendDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
     for ((i=0; i<fe_count; i++)); do
-        local fe_domain rd
+        local fe_domain
         fe_domain=$(jq -r ".deployment.frontendDomains[$i]" "$CONFIG_FILE")
         if [[ -z "$fe_domain" || "$fe_domain" == "null" ]]; then continue; fi
-        rd=$(get_root_domain_for "$fe_domain")
 
         conf+="server {\n"
-        conf+="    listen 443 ssl;\n"
+        conf+="    listen 8443 ssl;\n"
         conf+="    server_name ${fe_domain};\n"
-        conf+="    ssl_certificate /etc/letsencrypt/live/${rd}/fullchain.pem;\n"
-        conf+="    ssl_certificate_key /etc/letsencrypt/live/${rd}/privkey.pem;\n"
+        conf+="    ssl_certificate /etc/letsencrypt/fullchain.pem;\n"
+        conf+="    ssl_certificate_key /etc/letsencrypt/privkey.pem;\n"
+        conf+="    proxy_read_timeout 86400;\n"
+        conf+="    proxy_send_timeout 86400;\n"
         conf+="    ssl_protocols TLSv1.2 TLSv1.3;\n"
         conf+="    ssl_ciphers HIGH:!aNULL:!MD5;\n"
         conf+="    root /var/www/onedash;\n"
-        conf+="    index index.html;\n"
         conf+="    location / { try_files \$uri \$uri/ /index.html; }\n"
         conf+="}\n\n"
     done
@@ -1127,20 +1185,20 @@ phase_nginx_config() {
     # Homepage Domains
     local hp_count=$(jq '.deployment.homepageDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
     for ((i=0; i<hp_count; i++)); do
-        local hp_domain rd
+        local hp_domain
         hp_domain=$(jq -r ".deployment.homepageDomains[$i]" "$CONFIG_FILE")
         if [[ -z "$hp_domain" || "$hp_domain" == "null" ]]; then continue; fi
-        rd=$(get_root_domain_for "$hp_domain")
 
         conf+="server {\n"
-        conf+="    listen 443 ssl;\n"
+        conf+="    listen 8443 ssl;\n"
         conf+="    server_name ${hp_domain};\n"
-        conf+="    ssl_certificate /etc/letsencrypt/live/${rd}/fullchain.pem;\n"
-        conf+="    ssl_certificate_key /etc/letsencrypt/live/${rd}/privkey.pem;\n"
+        conf+="    ssl_certificate /etc/letsencrypt/fullchain.pem;\n"
+        conf+="    ssl_certificate_key /etc/letsencrypt/privkey.pem;\n"
+        conf+="    proxy_read_timeout 86400;\n"
+        conf+="    proxy_send_timeout 86400;\n"
         conf+="    ssl_protocols TLSv1.2 TLSv1.3;\n"
         conf+="    ssl_ciphers HIGH:!aNULL:!MD5;\n"
         conf+="    root /var/www/homepage;\n"
-        conf+="    index index.html;\n"
         conf+="    location / { try_files \$uri \$uri/ /index.html; }\n"
         conf+="}\n\n"
     done
@@ -1148,20 +1206,20 @@ phase_nginx_config() {
     # GohcosWeb / Hosting Homepage Domains
     local gohcos_count=$(jq '.deployment.gohcosDomains // [] | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
     for ((i=0; i<gohcos_count; i++)); do
-        local gh_domain rd
+        local gh_domain
         gh_domain=$(jq -r ".deployment.gohcosDomains[$i]" "$CONFIG_FILE")
         if [[ -z "$gh_domain" || "$gh_domain" == "null" ]]; then continue; fi
-        rd=$(get_root_domain_for "$gh_domain")
 
         conf+="server {\n"
-        conf+="    listen 443 ssl;\n"
+        conf+="    listen 8443 ssl;\n"
         conf+="    server_name ${gh_domain};\n"
-        conf+="    ssl_certificate /etc/letsencrypt/live/${rd}/fullchain.pem;\n"
-        conf+="    ssl_certificate_key /etc/letsencrypt/live/${rd}/privkey.pem;\n"
+        conf+="    ssl_certificate /etc/letsencrypt/fullchain.pem;\n"
+        conf+="    ssl_certificate_key /etc/letsencrypt/privkey.pem;\n"
+        conf+="    proxy_read_timeout 86400;\n"
+        conf+="    proxy_send_timeout 86400;\n"
         conf+="    ssl_protocols TLSv1.2 TLSv1.3;\n"
         conf+="    ssl_ciphers HIGH:!aNULL:!MD5;\n"
-        conf+="    root /var/www/gohcosweb;\n"
-        conf+="    index index.html;\n"
+        conf+="    root /var/www/gohcos;\n"
         conf+="    location / { try_files \$uri \$uri/ /index.html; }\n"
         conf+="}\n\n"
     done
@@ -1178,87 +1236,139 @@ phase_nginx_config() {
         [[ -z "$wc_rd" || "$wc_rd" == "null" ]] && continue
         conf+="# Wildcard catch-all for tenant subdomains (*.${wc_rd})\n"
         conf+="server {\n"
-        conf+="    listen 443 ssl;\n"
+        conf+="    listen 8443 ssl;\n"
         conf+="    server_name *.${wc_rd};\n"
-        conf+="    ssl_certificate /etc/letsencrypt/live/${wc_rd}/fullchain.pem;\n"
-        conf+="    ssl_certificate_key /etc/letsencrypt/live/${wc_rd}/privkey.pem;\n"
+        conf+="    ssl_certificate /etc/letsencrypt/fullchain.pem;\n"
+        conf+="    ssl_certificate_key /etc/letsencrypt/privkey.pem;\n"
+        conf+="    proxy_read_timeout 86400;\n"
+        conf+="    proxy_send_timeout 86400;\n"
         conf+="    ssl_protocols TLSv1.2 TLSv1.3;\n"
         conf+="    ssl_ciphers HIGH:!aNULL:!MD5;\n"
-        # ── Serve Vue3 SPA (ONEDASH) for tenant subdomains ──
         conf+="    root /var/www/onedash;\n"
-        conf+="    index index.html;\n\n"
-        # WebSocket proxy
-        conf+="    location /ws/ {\n"
-        conf+="        proxy_pass http://backend_upstream;\n"
-        conf+="        proxy_set_header Host \$host;\n"
-        conf+="        proxy_set_header X-Real-IP \$remote_addr;\n"
-        conf+="        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;\n"
-        conf+="        proxy_set_header X-Forwarded-Proto https;\n"
-        conf+="        proxy_http_version 1.1;\n"
-        conf+="        proxy_set_header Upgrade \$http_upgrade;\n"
-        conf+="        proxy_set_header Connection \"upgrade\";\n"
-        conf+="        proxy_read_timeout 86400;\n"
-        conf+="        proxy_send_timeout 86400;\n"
-        conf+="        proxy_connect_timeout 10;\n"
-        conf+="        proxy_cache off;\n"
-        conf+="        proxy_buffering off;\n"
-        conf+="    }\n\n"
-        # API proxy — all backend API calls go through /api/
-        conf+="    location /api/ {\n"
-        conf+="        set \$do_cors_preflight 0;\n"
-        conf+="        if (\$request_method = 'OPTIONS') { set \$do_cors_preflight 1; }\n"
-        conf+="        if (\$cors_origin = \"\") { set \$do_cors_preflight 0; }\n"
-        conf+="        if (\$do_cors_preflight = 1) {\n"
-        conf+="            add_header 'Access-Control-Allow-Origin'      \"\$cors_origin\" always;\n"
-        conf+="            add_header 'Access-Control-Allow-Credentials' 'true'         always;\n"
-        conf+="            add_header 'Access-Control-Allow-Methods'     'GET, POST, PUT, PATCH, DELETE, OPTIONS' always;\n"
-        conf+="            add_header 'Access-Control-Allow-Headers'     'Authorization, Content-Type, X-CSRFToken, X-Requested-With, Accept, Origin, X-Request-UUID, Idempotency-Key, Cache-Control, Pragma' always;\n"
-        conf+="            add_header 'Access-Control-Max-Age'           '86400'        always;\n"
-        conf+="            return 204;\n"
-        conf+="        }\n"
-        conf+="        proxy_pass http://backend_upstream;\n"
-        conf+="        proxy_http_version 1.1;\n"
-        conf+="        proxy_set_header Host \$host;\n"
-        conf+="        proxy_set_header X-Real-IP \$remote_addr;\n"
-        conf+="        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;\n"
-        conf+="        proxy_set_header X-Forwarded-Proto \$scheme;\n"
-        conf+="        proxy_set_header Origin \$http_origin;\n"
-        conf+="        proxy_read_timeout 300s;\n"
-        conf+="    }\n\n"
-        # SPA fallback — serve Vue3 frontend for all other routes
-        conf+="    location / {\n"
-        conf+="        try_files \$uri \$uri/ /index.html;\n"
-        conf+="    }\n"
+        conf+="    location / { try_files \$uri \$uri/ /index.html; }\n"
         conf+="}\n\n"
     done
     # ─────────────────────────────────────────────────────────────────────────
 
     # ── Section for own-domain tenant blocks added at runtime by NginxManager ─
-    # NginxManager (running inside the backend container) appends server blocks
-    # here when a tenant verifies a custom domain.  The block delimiters are
-    # used as markers so the manager can find the insertion point reliably.
     conf+="# === DYNAMIC TENANT DOMAINS (AUTO-GENERATED) ===\n"
     conf+="# Own-domain tenant blocks are appended here by NginxManager.\n"
     conf+="# DO NOT EDIT THIS SECTION MANUALLY.\n"
     conf+="# === DYNAMIC TENANT DOMAINS (AUTO-GENERATED) ===\n\n"
-    # ─────────────────────────────────────────────────────────────────────────
 
-    # HTTP → HTTPS redirect
+    # ── HTTP → HTTPS redirect (explicit domain list) ──
+    local all_http_domains="platform.${primary_domain}"
+    for ((i=0; i<kc_count; i++)); do
+        local _kd; _kd=$(jq -r ".deployment.keycloakDomains[$i]" "$CONFIG_FILE")
+        [[ -n "$_kd" && "$_kd" != "null" ]] && all_http_domains+=" $_kd"
+    done
+    for ((i=0; i<fe_count; i++)); do
+        local _fd; _fd=$(jq -r ".deployment.frontendDomains[$i]" "$CONFIG_FILE")
+        [[ -n "$_fd" && "$_fd" != "null" ]] && all_http_domains+=" $_fd"
+    done
+    for ((i=0; i<api_count; i++)); do
+        local _ad; _ad=$(jq -r ".deployment.apiDomains[$i]" "$CONFIG_FILE")
+        [[ -n "$_ad" && "$_ad" != "null" ]] && all_http_domains+=" $_ad"
+    done
     conf+="server {\n"
     conf+="    listen 80;\n"
+    conf+="    server_name ${all_http_domains};\n"
+    conf+="    return 301 https://\$server_name\$request_uri;\n"
+    conf+="}\n\n"
+
+    # internal.local HTTP proxy
+    conf+="server {\n"
+    conf+="    listen 80;\n"
+    conf+="    server_name internal.local;\n"
+    conf+="    location / {\n"
+    conf+="        proxy_pass http://internal.local:9000;\n"
+    conf+="    }\n"
+    conf+="}\n\n"
+
+    # HTTP catch-all: proxy unknown domains to CyberPanel / OpenLiteSpeed
+    conf+="server {\n"
+    conf+="    listen 80 default_server;\n"
     conf+="    server_name _;\n"
-    conf+="    return 301 https://\$host\$request_uri;\n"
+    conf+="    location / {\n"
+    conf+="        proxy_pass http://cyberpanel_host:80;\n"
+    conf+="        proxy_http_version 1.1;\n"
+    conf+="        proxy_set_header Host \$host;\n"
+    conf+="        proxy_set_header X-Real-IP \$remote_addr;\n"
+    conf+="        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;\n"
+    conf+="        proxy_set_header X-Forwarded-Proto \$scheme;\n"
+    conf+="    }\n"
     conf+="}\n"
 
-    # Write to the shared conf.d bind-mount directory so that:
-    #   • nginx_main reads it at /etc/nginx/conf.d/default.conf
-    #   • backend can modify it at /etc/nginx-conf/default.conf
-    # Also keep the template copy as a reference / fallback.
+    # Write config files
     mkdir -p "$BASE_DIR/nginx/conf.d"
     echo -e "$conf" > "$BASE_DIR/nginx/conf.d/default.conf"
     mkdir -p "$nginx_dir"
     echo -e "$conf" > "$nginx_dir/default.conf.template"
-    update_status "nginx" "Phase 6: Nginx config written"
+
+    # ── Generate nginx.conf with SNI stream block ──
+    # Routes TLS by SNI hostname: infrastructure domains → nginx HTTP (8443),
+    # everything else → CyberPanel/OpenLiteSpeed (443)
+    local nginx_main_conf=""
+    nginx_main_conf+="user  nginx;\nworker_processes  auto;\n\n"
+    nginx_main_conf+="error_log  /var/log/nginx/error.log notice;\npid        /run/nginx.pid;\n\n"
+    nginx_main_conf+="events {\n    worker_connections  1024;\n}\n\n"
+    nginx_main_conf+="stream {\n"
+    nginx_main_conf+="    map \$ssl_preread_server_name \$tls_upstream {\n"
+    # Add infrastructure domains to SNI map
+    nginx_main_conf+="        platform.${primary_domain}    nginx_https;\n"
+    for ((i=0; i<kc_count; i++)); do
+        local _kd; _kd=$(jq -r ".deployment.keycloakDomains[$i]" "$CONFIG_FILE")
+        [[ -n "$_kd" && "$_kd" != "null" ]] && nginx_main_conf+="        ${_kd}    nginx_https;\n"
+    done
+    for ((i=0; i<api_count; i++)); do
+        local _ad; _ad=$(jq -r ".deployment.apiDomains[$i]" "$CONFIG_FILE")
+        [[ -n "$_ad" && "$_ad" != "null" ]] && nginx_main_conf+="        ${_ad}    nginx_https;\n"
+    done
+    for ((i=0; i<fe_count; i++)); do
+        local _fd; _fd=$(jq -r ".deployment.frontendDomains[$i]" "$CONFIG_FILE")
+        [[ -n "$_fd" && "$_fd" != "null" ]] && nginx_main_conf+="        ${_fd}    nginx_https;\n"
+    done
+    for ((i=0; i<hp_count; i++)); do
+        local _hd; _hd=$(jq -r ".deployment.homepageDomains[$i]" "$CONFIG_FILE")
+        [[ -n "$_hd" && "$_hd" != "null" ]] && nginx_main_conf+="        ${_hd}    nginx_https;\n"
+    done
+    for ((i=0; i<gohcos_count; i++)); do
+        local _gd; _gd=$(jq -r ".deployment.gohcosDomains[$i]" "$CONFIG_FILE")
+        [[ -n "$_gd" && "$_gd" != "null" ]] && nginx_main_conf+="        ${_gd}    nginx_https;\n"
+    done
+    # Wildcard subdomains for root domains
+    for ((wi=0; wi<rd_wc_count; wi++)); do
+        local wc_rd_sni
+        wc_rd_sni=$(jq -r ".deployment.rootDomains[$wi].domain" "$CONFIG_FILE")
+        [[ -z "$wc_rd_sni" || "$wc_rd_sni" == "null" ]] && continue
+        local wc_rd_escaped
+        wc_rd_escaped=$(echo "$wc_rd_sni" | sed 's/\./\\./g')
+        nginx_main_conf+="        ~^.+\\.${wc_rd_escaped}\$    nginx_https;\n"
+    done
+    nginx_main_conf+="        default                 cyberpanel_https;\n"
+    nginx_main_conf+="    }\n\n"
+    nginx_main_conf+="    upstream nginx_https {\n        server 127.0.0.1:8443;\n    }\n\n"
+    nginx_main_conf+="    upstream cyberpanel_https {\n        server cyberpanel_host:443;\n    }\n\n"
+    nginx_main_conf+="    server {\n"
+    nginx_main_conf+="        listen 443;\n        listen [::]:443;\n\n"
+    nginx_main_conf+="        ssl_preread  on;\n        proxy_pass   \$tls_upstream;\n\n"
+    nginx_main_conf+="        proxy_connect_timeout  10s;\n        proxy_timeout          86400s;\n"
+    nginx_main_conf+="    }\n"
+    nginx_main_conf+="}\n\n"
+    nginx_main_conf+="http {\n"
+    nginx_main_conf+="    include       /etc/nginx/mime.types;\n"
+    nginx_main_conf+="    default_type  application/octet-stream;\n\n"
+    nginx_main_conf+="    log_format  main  '\$remote_addr - \$remote_user [\$time_local] \"\$request\" '\n"
+    nginx_main_conf+="                      '\$status \$body_bytes_sent \"\$http_referer\" '\n"
+    nginx_main_conf+="                      '\"\$http_user_agent\" \"\$http_x_forwarded_for\"';\n\n"
+    nginx_main_conf+="    access_log  /var/log/nginx/access.log  main;\n\n"
+    nginx_main_conf+="    sendfile        on;\n    keepalive_timeout  65;\n\n"
+    nginx_main_conf+="    include /etc/nginx/conf.d/*.conf;\n"
+    nginx_main_conf+="}\n"
+
+    echo -e "$nginx_main_conf" > "$BASE_DIR/nginx/nginx.conf"
+
+    update_status "nginx" "Phase 6: Nginx config and nginx.conf written"
 }
 
 phase_docker_compose() {
@@ -1288,11 +1398,18 @@ services:
     extra_hosts:
       - "postgres.local:host-gateway"
     ports:
-      - "127.0.0.1:5432:5432"
+      - "5432:5432"
 
   redis:
     image: redis:alpine
     container_name: redis
+    networks:
+      - hcos_network
+
+  fraud_checker:
+    build:
+      context: ./fraud-detection-service
+    container_name: fraud_checker
     networks:
       - hcos_network
 
@@ -1301,6 +1418,7 @@ services:
     container_name: cyberpanel_alma
     privileged: true
     cgroup: host
+    stop_signal: SIGRTMIN+3
     entrypoint: ["/bin/bash", "/opt/cyberpanel-entrypoint.sh"]
     ports:
       - "8090:8090"
@@ -1324,10 +1442,6 @@ services:
       hcos_network:
         aliases:
           - platform.hcos.io
-    deploy:
-      resources:
-        limits:
-          memory: 3G
 
   keycloak:
     build:
@@ -1348,7 +1462,7 @@ services:
       - KC_DB_USERNAME=\${BACKEND_USER:-hcos_db_admin}
       - KC_DB_PASSWORD=\${BACKEND_PASSWORD:-hcos_password}
     ports:
-      - "127.0.0.1:3001:3001"
+      - "3001:3001"
     networks:
       - hcos_network
     depends_on:
@@ -1384,7 +1498,7 @@ services:
       - "internal.local:host-gateway"
       - "postgres.local:host-gateway"
     ports:
-      - "127.0.0.1:5000:5000"
+      - "5000:5000"
 
   celery:
     build:
@@ -1394,6 +1508,7 @@ services:
     env_file: .env
     volumes:
       - ./${backend_dir}:/app
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - DATABASE_URL=postgres://\${BACKEND_USER:-hcos_db_admin}:\${BACKEND_PASSWORD:-hcos_password}@postgres:5432/\${BACKEND_DB:-hcos_db}
       - CELERY_BROKER_URL=redis://redis:6379/0
@@ -1420,6 +1535,9 @@ services:
       - DATABASE_URL=postgres://\${BACKEND_USER:-hcos_db_admin}:\${BACKEND_PASSWORD:-hcos_password}@postgres:5432/\${BACKEND_DB:-hcos_db}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    extra_hosts:
+      - "internal.local:host-gateway"
+      - "postgres.local:host-gateway"
     depends_on:
       - postgres
       - redis
@@ -1434,23 +1552,22 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      # Shared bind-mount: nginx reads config here; backend writes here via NginxManager
-      - ./nginx/conf.d:/etc/nginx/conf.d
-      # Template kept as a fallback / reference (docker-entrypoint.sh skips it if conf.d exists)
       - ./nginx/templates:/etc/nginx/templates
-      - /etc/letsencrypt:/etc/letsencrypt:ro
+      # Custom nginx.conf: adds stream block for SNI-based routing of user domains to CyberPanel
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certbot/conf:/etc/letsencrypt:ro
       - ./${frontend_dir}/dist:/var/www/onedash
       - ./${homepage_dir}/dist:/var/www/homepage
-      - ./${gohcos_dir}/dist:/var/www/gohcosweb
-      - ./nginx/docker-entrypoint.sh:/docker-entrypoint.sh
-    entrypoint: ["/docker-entrypoint.sh"]
+      - ./${gohcos_dir}/dist:/var/www/gohcos
     environment:
       IS_DEBUG: "false"
     depends_on:
       - backend
       - keycloak
     networks:
-      - hcos_network
+      hcos_network:
+        aliases:
+          - onedash.hcos.io
     extra_hosts:
       - "internal.local:host-gateway"
 
