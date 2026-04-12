@@ -152,7 +152,18 @@ install_prerequisites() {
     # Docker
     if ! command -v docker &>/dev/null; then
         echo -e "${YELLOW}Installing Docker...${NC}"
-        curl -fsSL https://get.docker.com | sh
+        if command -v dnf &>/dev/null; then
+            dnf install -y dnf-plugins-core
+            dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+            dnf install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin docker-buildx-plugin
+            systemctl enable --now docker
+        elif command -v yum &>/dev/null; then
+            yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+            yum install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin docker-buildx-plugin
+            systemctl enable --now docker
+        else
+            curl -fsSL https://get.docker.com | sh
+        fi
     fi
     echo -e "${GREEN}✓ Docker $(docker --version | awk '{print $3}')${NC}"
 
