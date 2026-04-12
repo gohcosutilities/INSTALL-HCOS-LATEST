@@ -150,8 +150,8 @@ install_prerequisites() {
     $PKG_INSTALL curl git jq net-tools lsof ca-certificates gnupg 2>/dev/null || true
 
     # Docker
-    if ! command -v docker &>/dev/null; then
-        echo -e "${YELLOW}Installing Docker...${NC}"
+    if ! command -v docker &>/dev/null || ! systemctl is-active --quiet docker; then
+        echo -e "${YELLOW}Installing/Starting Docker...${NC}"
         if command -v dnf &>/dev/null; then
             dnf install -y dnf-plugins-core
             dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
@@ -164,6 +164,10 @@ install_prerequisites() {
         else
             curl -fsSL https://get.docker.com | sh
         fi
+        
+        # Ensure docker daemon is actually running
+        systemctl enable --now docker
+        sleep 3
     fi
     echo -e "${GREEN}✓ Docker $(docker --version | awk '{print $3}')${NC}"
 
