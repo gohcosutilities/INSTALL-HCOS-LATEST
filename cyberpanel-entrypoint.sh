@@ -82,7 +82,7 @@ if [ -f "$INSTALL_MARKER" ] && [ -f "$PERSIST_DIR/CyberCP/wsgi.py" ]; then
         fi
     done
     # Copy HCOS agent scripts
-    for agent in hcos_wordpress_agent.py hcos_backup_agent.py; do
+    for agent in hcos_wordpress_agent.py hcos_backup_agent.py hcos_permission_agent.py; do
         if [ -f "$CONTROL_MOUNT/$agent" ]; then
             cp -f "$CONTROL_MOUNT/$agent" "/usr/local/CyberCP/$agent"
             chmod +x "/usr/local/CyberCP/$agent"
@@ -648,7 +648,7 @@ EOF
             fi
         done
         # Copy HCOS agent scripts
-        for agent in hcos_wordpress_agent.py hcos_backup_agent.py; do
+        for agent in hcos_wordpress_agent.py hcos_backup_agent.py hcos_permission_agent.py; do
             if [ -f "$CONTROL_WORK/$agent" ]; then
                 cp -f "$CONTROL_WORK/$agent" "/usr/local/CyberCP/$agent"
                 chmod +x "/usr/local/CyberCP/$agent"
