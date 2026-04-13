@@ -1421,12 +1421,16 @@ services:
     networks:
       - hcos_network
 
+$(if [[ -d "$BASE_DIR/fraud-detection-service" ]]; then
+cat <<FRAUDEOF
   fraud_checker:
     build:
       context: ./fraud-detection-service
     container_name: fraud_checker
     networks:
       - hcos_network
+FRAUDEOF
+fi)
 
   cyberpanel_host:
     image: almalinux:9.5
