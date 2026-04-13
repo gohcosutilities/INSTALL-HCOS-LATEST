@@ -1680,6 +1680,7 @@ phase_migrations() {
     update_status "migrations" "Fixing cyberpanel dependencies..."
     run_cmd "$COMPOSE_CMD exec -T cyberpanel_host dnf install -y MariaDB-devel" "true"
     run_cmd "$COMPOSE_CMD exec -T cyberpanel_host pip3 install -r /usr/local/CyberCP/requirments.txt" "true"
+    run_cmd "$COMPOSE_CMD exec -T cyberpanel_host pip3 install Django==3.2.19 mysqlclient==2.1.1" "true"
     # Restart lscpd to ensure wsgi server picks up the python environment
     run_cmd "$COMPOSE_CMD exec -T cyberpanel_host systemctl restart lscpd" "true"
 
