@@ -878,6 +878,16 @@ phase_ensure_ssl() {
                 -subj "/CN=${rd}/O=HCOS/C=US" 2>/dev/null
         fi
     done
+
+    # Symlink the first root domain's certificates as the default certs
+    # so that Nginx's hardcoded `/etc/letsencrypt/fullchain.pem` resolves properly
+    local primary_domain
+    primary_domain=$(jq -r '.deployment.rootDomains[0].domain // empty' "$CONFIG_FILE" 2>/dev/null || echo "")
+    if [[ -n "$primary_domain" ]]; then
+        update_status "ssl" "Symlinking default certs to $primary_domain"
+        ln -sf "/etc/letsencrypt/live/$primary_domain/fullchain.pem" "/etc/letsencrypt/fullchain.pem"
+        ln -sf "/etc/letsencrypt/live/$primary_domain/privkey.pem" "/etc/letsencrypt/privkey.pem"
+    fi
 }
 
 phase_dns() {
