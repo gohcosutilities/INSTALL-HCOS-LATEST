@@ -1671,10 +1671,17 @@ phase_docker_up() {
 }
 
 phase_migrations() {
-    update_status "migrations" "Phase 9: Running Django migrations (waiting 20s for services)..."
+    update_status "migrations" "Phase 9: Running post-deployment tasks and migrations (waiting 20s for services)..."
 
     cd "$BASE_DIR"
     sleep 20
+
+    # Ensure cyberpanel dependencies are robustly installed in case of image idiosyncrasies
+    update_status "migrations" "Fixing cyberpanel dependencies..."
+    run_cmd "$COMPOSE_CMD exec -T cyberpanel_host dnf install -y MariaDB-devel" "true"
+    run_cmd "$COMPOSE_CMD exec -T cyberpanel_host pip3 install -r /usr/local/CyberCP/requirments.txt" "true"
+    # Restart lscpd to ensure wsgi server picks up the python environment
+    run_cmd "$COMPOSE_CMD exec -T cyberpanel_host systemctl restart lscpd" "true"
 
     run_cmd "$COMPOSE_CMD exec -T backend python manage.py migrate --noinput" "true"
     run_cmd "$COMPOSE_CMD exec -T backend python manage.py create_base_products" "true"
