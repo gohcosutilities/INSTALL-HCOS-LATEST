@@ -49,12 +49,154 @@ if [ -f "$INSTALL_MARKER" ] && [ -f "$PERSIST_DIR/CyberCP/wsgi.py" ]; then
     cp -a "$PERSIST_DIR" /usr/local/CyberCP
     echo "[warm-start] Restored $(du -sh /usr/local/CyberCP/ | cut -f1) to /usr/local/CyberCP/"
 
-    # Fix virtualenv python symlink — /usr/local/CyberPanel/ doesn't survive container recreation
+    # ── Overlay HCOS custom templates from CONTROL mount ──
+    # The CONTROL source contains customized templates (clickable dashboard cards,
+    # no notification banners, sidebar-integrated WordPress/Backup managers).
+    # These must be copied on every warm start since the staging volume has the
+    # originals from the initial CyberPanel install.
+    echo "[warm-start] Applying HCOS template customizations from CONTROL..."
+    TEMPLATE_SRC="$CONTROL_MOUNT/baseTemplate/templates"
+    TEMPLATE_DST="/usr/local/CyberCP/baseTemplate/templates"
+    if [ -d "$TEMPLATE_SRC/baseTemplate" ] && [ -d "$TEMPLATE_DST/baseTemplate" ]; then
+        cp -f "$TEMPLATE_SRC/baseTemplate/index.html"    "$TEMPLATE_DST/baseTemplate/index.html"    2>/dev/null && echo "[warm-start]   Applied index.html (no banners)"
+        cp -f "$TEMPLATE_SRC/baseTemplate/homePage.html" "$TEMPLATE_DST/baseTemplate/homePage.html" 2>/dev/null && echo "[warm-start]   Applied homePage.html (clickable insights)"
+    fi
+    WF_TEMPLATE_SRC="$CONTROL_MOUNT/websiteFunctions/templates/websiteFunctions"
+    WF_TEMPLATE_DST="/usr/local/CyberCP/websiteFunctions/templates/websiteFunctions"
+    if [ -d "$WF_TEMPLATE_SRC" ] && [ -d "$WF_TEMPLATE_DST" ]; then
+        cp -f "$WF_TEMPLATE_SRC/wordpressManager.html" "$WF_TEMPLATE_DST/wordpressManager.html" 2>/dev/null && echo "[warm-start]   Applied wordpressManager.html (sidebar)"
+        cp -f "$WF_TEMPLATE_SRC/backupManager.html"    "$WF_TEMPLATE_DST/backupManager.html"    2>/dev/null && echo "[warm-start]   Applied backupManager.html (sidebar)"
+        cp -f "$WF_TEMPLATE_SRC/website.html"           "$WF_TEMPLATE_DST/website.html"           2>/dev/null && echo "[warm-start]   Applied website.html (WP install link)"
+    fi
+    # Deploy WordPress & Backup SPA static assets from CONTROL
+    WF_STATIC_SRC="$CONTROL_MOUNT/websiteFunctions/static/websiteFunctions"
+    WF_STATIC_DST="/usr/local/CyberCP/public/static/websiteFunctions"
+    for spa in wordpress backups; do
+        if [ -d "$WF_STATIC_SRC/$spa/assets" ]; then
+            mkdir -p "$WF_STATIC_DST/$spa/assets"
+            cp -f "$WF_STATIC_SRC/$spa/assets/"* "$WF_STATIC_DST/$spa/assets/" 2>/dev/null
+            chown -R lscpd:lscpd "$WF_STATIC_DST/$spa/" 2>/dev/null
+            find "$WF_STATIC_DST/$spa/" -type d -exec chmod 755 {} \; 2>/dev/null
+            find "$WF_STATIC_DST/$spa/" -type f -exec chmod 644 {} \; 2>/dev/null
+            echo "[warm-start]   Deployed $spa SPA assets"
+        fi
+    done
+    # Copy HCOS agent scripts
+    for agent in hcos_wordpress_agent.py hcos_backup_agent.py; do
+        if [ -f "$CONTROL_MOUNT/$agent" ]; then
+            cp -f "$CONTROL_MOUNT/$agent" "/usr/local/CyberCP/$agent"
+            chmod +x "/usr/local/CyberCP/$agent"
+            echo "[warm-start]   Applied $agent"
+        fi
+    done
+    # Deploy HCOS-customized CyberPanel Python views from CONTROL
+    # These contain resource-limit display logic (reads hcos_resource_limits.json),
+    # WordPress/Backup Manager API endpoints, and other HCOS integrations.
+    for py_overlay in \
+        "baseTemplate/views.py" \
+        "websiteFunctions/views.py" \
+        "websiteFunctions/website.py"; do
+        if [ -f "$CONTROL_MOUNT/$py_overlay" ]; then
+            cp -f "$CONTROL_MOUNT/$py_overlay" "/usr/local/CyberCP/$py_overlay"
+            echo "[warm-start]   Applied $py_overlay (HCOS customization)"
+        fi
+    done
+
+    # Deploy authz Keycloak refresh support (views, urls, middleware, settings)
+    AUTHZ_SRC="$CONTROL_MOUNT/authz"
+    AUTHZ_DST="/usr/local/CyberCP/authz"
+    if [ -d "$AUTHZ_SRC" ] && [ -d "$AUTHZ_DST" ]; then
+        for f in views.py urls.py middleware.py; do
+            if [ -f "$AUTHZ_SRC/$f" ]; then
+                cp -f "$AUTHZ_SRC/$f" "$AUTHZ_DST/$f"
+            fi
+        done
+        echo "[warm-start]   Applied authz token refresh (views, urls, middleware)"
+    fi
+    if [ -f "$CONTROL_MOUNT/CyberCP/settings.py" ]; then
+        cp -f "$CONTROL_MOUNT/CyberCP/settings.py" "/usr/local/CyberCP/CyberCP/settings.py"
+        echo "[warm-start]   Applied CyberCP/settings.py (middleware registration)"
+    fi
+
+    # Fix applicationInstaller.py dbCreation bug (returns int instead of tuple on error)
+    APP_INSTALLER_SRC="$CONTROL_MOUNT/plogical/applicationInstaller.py"
+    APP_INSTALLER_DST="/usr/local/CyberCP/plogical/applicationInstaller.py"
+    if [ -f "$APP_INSTALLER_SRC" ] && [ -d "$(dirname $APP_INSTALLER_DST)" ]; then
+        cp -f "$APP_INSTALLER_SRC" "$APP_INSTALLER_DST"
+        echo "[warm-start]   Applied applicationInstaller.py (dbCreation fix)"
+    fi
+
+    # Ensure HCOS server ID file exists for Backup/WordPress Manager SPAs
+    if [ ! -f /etc/cyberpanel/hcos_server_id ]; then
+        echo '1' > /etc/cyberpanel/hcos_server_id
+        echo "[warm-start] Created /etc/cyberpanel/hcos_server_id = 1"
+    fi
+
+    # Ensure 'php' is in PATH for wp-cli (lsphp installs don't always create a 'php' binary)
+    if ! command -v php &>/dev/null; then
+        for v in 84 83 82 81 80 74; do
+            if [ -x "/usr/local/lsws/lsphp${v}/bin/php" ]; then
+                ln -sf "/usr/local/lsws/lsphp${v}/bin/php" /usr/local/bin/php
+                echo "[warm-start] Created php symlink → lsphp${v}/bin/php"
+                break
+            elif [ -x "/usr/local/lsws/lsphp${v}/bin/lsphp" ]; then
+                ln -sf "/usr/local/lsws/lsphp${v}/bin/lsphp" /usr/local/bin/php
+                echo "[warm-start] Created php symlink → lsphp${v}/bin/lsphp"
+                break
+            fi
+        done
+    fi
+
+    # Ensure sudoers secure_path includes /usr/local/bin (for wp-cli php symlink)
+    # sudo resets PATH to secure_path; without /usr/local/bin, site-user wp-cli calls fail
+    if [ -f /etc/sudoers ] && ! grep -q '/usr/local/bin' /etc/sudoers; then
+        sed -i 's|^Defaults\s*secure_path\s*=.*|Defaults    secure_path = /usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin|' /etc/sudoers
+        echo "[warm-start] Fixed sudoers secure_path to include /usr/local/bin"
+    fi
+
+    # Install wp-cli if not present (required by hcos_wordpress_agent.py)
+    if [ ! -x /usr/local/bin/wp ]; then
+        echo "[warm-start] Installing wp-cli..."
+        curl -sS https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /usr/local/bin/wp \
+            && chmod +x /usr/local/bin/wp \
+            && echo "[warm-start] wp-cli installed ($(wp --version --allow-root 2>/dev/null || echo unknown))" \
+            || echo "[warm-start] WARNING: wp-cli download failed"
+    fi
+
+    # Fix file permissions — staging volume may preserve host-user ownership
+    # that the lscpd (uid 992) WSGI worker cannot read (e.g. settings.py 640)
+    echo "[warm-start] Fixing file permissions for lscpd readability..."
+    find /usr/local/CyberCP -type f ! -perm /o=r -exec chmod o+r {} + 2>/dev/null || true
+    find /usr/local/CyberCP -type d ! -perm /o=rx -exec chmod o+rx {} + 2>/dev/null || true
+
+    # Fix virtualenv python symlinks — /usr/local/CyberPanel/ doesn't survive container recreation
+    SYS_PYTHON=$(readlink -f /usr/bin/python3)
     if [ -L /usr/local/CyberCP/bin/python3 ] && ! [ -e /usr/local/CyberCP/bin/python3 ]; then
-        echo "[warm-start] Fixing virtualenv python symlink..."
-        SYS_PYTHON=$(readlink -f /usr/bin/python3)
+        echo "[warm-start] Fixing virtualenv python3 symlink..."
         rm -f /usr/local/CyberCP/bin/python3
-        ln -s "$SYS_PYTHON" /usr/local/CyberCP/bin/python3
+        ln -sf "$SYS_PYTHON" /usr/local/CyberCP/bin/python3
+    fi
+    if [ -L /usr/local/CyberCP/bin/python ] && ! [ -e /usr/local/CyberCP/bin/python ]; then
+        echo "[warm-start] Fixing virtualenv python symlink..."
+        rm -f /usr/local/CyberCP/bin/python
+        ln -sf "$SYS_PYTHON" /usr/local/CyberCP/bin/python
+    fi
+    # Always ensure lswsgi wrapper uses the correct CyberCP site-packages
+    if [ -f /usr/local/CyberCP/bin/lswsgi ] && ! [ -f /usr/local/CyberCP/bin/lswsgi.bin ]; then
+        if ! grep -q "#!/bin/bash" /usr/local/CyberCP/bin/lswsgi; then
+            mv /usr/local/CyberCP/bin/lswsgi /usr/local/CyberCP/bin/lswsgi.bin
+        fi
+    fi
+    if [ -f /usr/local/CyberCP/bin/lswsgi.bin ]; then
+        echo "[warm-start] Patching lswsgi PYTHONPATH..."
+        cat << "EOF" > /usr/local/CyberCP/bin/lswsgi
+#!/bin/bash
+unset PYTHONHOME
+unset LS_PYTHONBIN
+export PYTHONPATH=/usr/local/CyberCP/lib/python3.9/site-packages:/usr/local/CyberCP/lib64/python3.9/site-packages:/usr/local/CyberCP
+exec /usr/local/CyberCP/bin/lswsgi.bin "$@"
+EOF
+        chmod +x /usr/local/CyberCP/bin/lswsgi
     fi
 
     # Regenerate lscpd SSL certs if they are dangling symlinks
@@ -167,12 +309,20 @@ REPOEOF
 
         echo "[warm-start] RPMs installed. $(rpm -qa | wc -l) total packages."
 
-        # ── Fix Python dependencies (lost on container recreation) ──
-        echo "[warm-start] Re-installing Python dependencies..."
-        dnf install -y --skip-broken python3-devel gcc MariaDB-devel zlib-devel openssl-devel
-        pip3 install Django==3.2.19 mysqlclient==2.1.1 djangorestframework==3.14.0
-        pip3 install -r /usr/local/CyberCP/requirments.txt 2>/dev/null || true
-        pip3 install Django==3.2.19 mysqlclient==2.1.1 djangorestframework==3.14.0 --force-reinstall
+        # ── Re-check php symlink after RPM install (lsphp may now be available) ──
+        if ! command -v php &>/dev/null; then
+            for v in 84 83 82 81 80 74; do
+                if [ -x "/usr/local/lsws/lsphp${v}/bin/php" ]; then
+                    ln -sf "/usr/local/lsws/lsphp${v}/bin/php" /usr/local/bin/php
+                    echo "[warm-start] Created php symlink → lsphp${v}/bin/php (post-RPM)"
+                    break
+                elif [ -x "/usr/local/lsws/lsphp${v}/bin/lsphp" ]; then
+                    ln -sf "/usr/local/lsws/lsphp${v}/bin/lsphp" /usr/local/bin/php
+                    echo "[warm-start] Created php symlink → lsphp${v}/bin/lsphp (post-RPM)"
+                    break
+                fi
+            done
+        fi
 
         # ── Recreate system users/groups if missing ──
         id -u cyberpanel &>/dev/null 2>&1 || useradd -r -d /usr/local/CyberCP cyberpanel 2>/dev/null
@@ -183,6 +333,16 @@ REPOEOF
         getent group ftpgroup &>/dev/null || groupadd ftpgroup 2>/dev/null
         usermod -a -G docker cyberpanel 2>/dev/null || true
         usermod -a -G lscpd,lsadm,nobody lscpd 2>/dev/null || true
+
+        # ── Create /home/cyberpanel/ (used for temp status files by virtualHostUtilities) ──
+        mkdir -p /home/cyberpanel
+        chown cyberpanel:cyberpanel /home/cyberpanel
+        chmod 700 /home/cyberpanel
+
+        # ── Recreate website system users and home directories from DB ──
+        # MariaDB data volume persists across container recreation, but /etc/passwd does not.
+        # Query the DB for all website externalApp users and recreate them.
+        # NOTE: Moved to after MariaDB start below (needs DB access).
 
         # ── Create PHP session directories ──
         for v in 74 80 81 82 83; do
@@ -238,16 +398,38 @@ REPOEOF
                 CREATE USER IF NOT EXISTS 'cyberpanel'@'localhost' IDENTIFIED BY '$MYSQL_PW';
                 ALTER USER 'cyberpanel'@'localhost' IDENTIFIED BY '$MYSQL_PW';
                 GRANT ALL PRIVILEGES ON *.* TO 'cyberpanel'@'localhost';
-                ALTER USER 'root'@'localhost' IDENTIFIED BY '$MYSQL_PW';
+                ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket OR mysql_native_password USING PASSWORD('$MYSQL_PW');
                 FLUSH PRIVILEGES;" 2>/dev/null
             # Patch .env with correct password
             if [ -f /usr/local/CyberCP/.env ]; then
                 sed -i "s|^DB_PASSWORD=.*|DB_PASSWORD=$MYSQL_PW|" /usr/local/CyberCP/.env
                 sed -i "s|^ROOT_DB_PASSWORD=.*|ROOT_DB_PASSWORD=$MYSQL_PW|" /usr/local/CyberCP/.env
+                chmod 644 /usr/local/CyberCP/.env 2>/dev/null
             fi
-            chmod 640 /etc/cyberpanel/mysqlPassword 2>/dev/null
-            chown root:cyberpanel /etc/cyberpanel/mysqlPassword 2>/dev/null
+            chmod 644 /etc/cyberpanel/mysqlPassword 2>/dev/null
             echo "[warm-start] MySQL password synchronized."
+        fi
+
+        # ── Recreate website system users and home directories from DB ──
+        # MariaDB data volume persists, but /etc/passwd does not survive container recreation.
+        echo "[warm-start] Recreating website system users from database..."
+        MYSQL_PW_WEB=""
+        if [ -f /etc/cyberpanel/mysqlPassword ]; then
+            MYSQL_PW_WEB=$(cat /etc/cyberpanel/mysqlPassword 2>/dev/null | tr -d '[:space:]')
+        fi
+        if [ -n "$MYSQL_PW_WEB" ]; then
+            mysql -u root -p"$MYSQL_PW_WEB" -N -B -e \
+                "SELECT domain, externalApp FROM cyberpanel.websiteFunctions_websites" 2>/dev/null | \
+            while IFS=$'\t' read -r domain extapp; do
+                if [ -n "$extapp" ] && ! id -u "$extapp" &>/dev/null; then
+                    useradd -r -d "/home/$domain" -s /sbin/nologin "$extapp" 2>/dev/null
+                    echo "[warm-start]   Created user $extapp for $domain"
+                fi
+                # Ensure home directory structure exists with correct ownership
+                mkdir -p "/home/$domain/public_html" "/home/$domain/logs"
+                chown -R "$extapp:$extapp" "/home/$domain" 2>/dev/null
+                chmod 750 "/home/$domain" 2>/dev/null
+            done
         fi
 
         # ── Start lscpd, then wait for socket before starting OLS ──
@@ -283,6 +465,58 @@ REPOEOF
         echo "  mariadb: $(systemctl is-active mariadb)"
         echo "  openlitespeed: $(systemctl is-active openlitespeed)"
         echo "[warm-start] CyberPanel services restored."
+
+        # ── Install and configure PowerDNS (authoritative DNS for hosted zones) ──
+        if ! command -v pdns_server &>/dev/null; then
+            echo "[warm-start] Installing PowerDNS from offline repo..."
+            rpm -ivh --nodeps --force \
+                "$OFFLINE_REPO"/pdns-4.8.4-*.rpm \
+                "$OFFLINE_REPO"/pdns-backend-mysql-4.8.4-*.rpm \
+                2>&1 | tail -5 || true
+        fi
+        if command -v pdns_server &>/dev/null; then
+            PDNS_PW=$(cat /etc/cyberpanel/mysqlPassword 2>/dev/null | tr -d '[:space:]')
+            cat > /etc/pdns/pdns.conf << PDNSEOF
+# PowerDNS configuration — managed by cyberpanel-entrypoint.sh
+launch=gmysql
+gmysql-host=127.0.0.1
+gmysql-port=3306
+gmysql-dbname=cyberpanel
+gmysql-user=root
+gmysql-password=$PDNS_PW
+setuid=pdns
+setgid=pdns
+local-address=0.0.0.0
+local-port=53
+api=yes
+api-key=hcos-pdns-internal-key
+webserver=yes
+webserver-address=0.0.0.0
+webserver-port=8081
+webserver-allow-from=0.0.0.0/0,::0/0
+log-dns-details=no
+loglevel=3
+PDNSEOF
+            chmod 640 /etc/pdns/pdns.conf
+            chown root:pdns /etc/pdns/pdns.conf 2>/dev/null || true
+            systemctl enable pdns 2>/dev/null || true
+            systemctl restart pdns 2>/dev/null || true
+            echo "[warm-start] PowerDNS: $(systemctl is-active pdns)"
+
+            # Ensure PowerDNS 4.8 schema compatibility (older CyberPanel tables may lack columns)
+            mysql -u root -e "ALTER TABLE cyberpanel.domains ADD COLUMN options TEXT DEFAULT NULL;" 2>/dev/null || true
+            mysql -u root -e "ALTER TABLE cyberpanel.domains ADD COLUMN catalog VARCHAR(255) DEFAULT NULL;" 2>/dev/null || true
+            # Fix unquoted TXT records (CyberPanel creates them without quotes but PDNS 4.8 requires them)
+            mysql -u root -e "UPDATE cyberpanel.records SET content = CONCAT('\"', content, '\"') WHERE type='TXT' AND content NOT LIKE '\"%%';" 2>/dev/null || true
+        fi
+
+        # HCOS: Fix static file permissions for lscpd restricted bits policy
+        if [ -d "/usr/local/CyberCP/public/static" ]; then
+            echo "[warm-start] Applying HCOS restricted bits policy for lscpd static maps..."
+            chown -R lscpd:lscpd "/usr/local/CyberCP/public/static" 2>/dev/null || true
+            find "/usr/local/CyberCP/public/static" -type d -exec chmod 755 {} \; 2>/dev/null || true
+            find "/usr/local/CyberCP/public/static" -type f -exec chmod 644 {} \; 2>/dev/null || true
+        fi
     ) &
 
     exec /usr/sbin/init
@@ -337,12 +571,31 @@ chmod +x "$CONTROL_WORK/install.sh" "$CONTROL_WORK/cyberpanel.sh"
         # ── Fix virtualenv python symlink to use system python (survives container recreation) ──
         if [ -L /usr/local/CyberCP/bin/python3 ]; then
             SYS_PYTHON=$(readlink -f /usr/bin/python3)
-            rm -f /usr/local/CyberCP/bin/python3
-            ln -s "$SYS_PYTHON" /usr/local/CyberCP/bin/python3
+            rm -f /usr/local/CyberCP/bin/python3 /usr/local/CyberCP/bin/python
+            ln -sf "$SYS_PYTHON" /usr/local/CyberCP/bin/python3
+            ln -sf "$SYS_PYTHON" /usr/local/CyberCP/bin/python
             echo "[entrypoint] Fixed virtualenv python symlink → $SYS_PYTHON"
         fi
+        # Ensure lswsgi wrapper uses correct CyberCP site-packages
+        if [ -f /usr/local/CyberCP/bin/lswsgi ] && ! [ -f /usr/local/CyberCP/bin/lswsgi.bin ]; then
+            if ! grep -q "#!/bin/bash" /usr/local/CyberCP/bin/lswsgi; then
+                mv /usr/local/CyberCP/bin/lswsgi /usr/local/CyberCP/bin/lswsgi.bin
+            fi
+        fi
+        if [ -f /usr/local/CyberCP/bin/lswsgi.bin ]; then
+            echo "[entrypoint] Patching lswsgi PYTHONPATH..."
+            cat << "EOF" > /usr/local/CyberCP/bin/lswsgi
+#!/bin/bash
+unset PYTHONHOME
+unset LS_PYTHONBIN
+export PYTHONPATH=/usr/local/CyberCP/lib/python3.9/site-packages:/usr/local/CyberCP/lib64/python3.9/site-packages:/usr/local/CyberCP
+exec /usr/local/CyberCP/bin/lswsgi.bin "$@"
+EOF
+            chmod +x /usr/local/CyberCP/bin/lswsgi
+        fi
 
-        # ── Ensure MySQL root uses unix_socket auth (needed for warm-start root access) ──
+        # ── Ensure MySQL root uses dual auth: unix_socket for CLI + password for CyberPanel Python ──
+        # Password will be properly set in the password fix block below
         mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket; FLUSH PRIVILEGES;" 2>/dev/null || true
 
         # ── Auto-fix MySQL password (avoids the 500 error on first login) ──
@@ -352,10 +605,11 @@ chmod +x "$CONTROL_WORK/install.sh" "$CONTROL_WORK/cyberpanel.sh"
             MYSQL_PW=$(cat /etc/cyberpanel/mysqlPassword 2>/dev/null | tr -d '[:space:]')
         fi
         if [ -n "$MYSQL_PW" ]; then
-            mysql -u root -e "ALTER USER 'cyberpanel'@'localhost' IDENTIFIED BY '$MYSQL_PW'; FLUSH PRIVILEGES;" 2>/dev/null
+            mysql -u root -e "ALTER USER 'cyberpanel'@'localhost' IDENTIFIED BY '$MYSQL_PW'; ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket OR mysql_native_password USING PASSWORD('$MYSQL_PW'); FLUSH PRIVILEGES;" 2>/dev/null
             if [ -f /usr/local/CyberCP/.env ]; then
                 sed -i "s|^DB_PASSWORD=.*|DB_PASSWORD=$MYSQL_PW|" /usr/local/CyberCP/.env
                 sed -i "s|^ROOT_DB_PASSWORD=.*|ROOT_DB_PASSWORD=$MYSQL_PW|" /usr/local/CyberCP/.env
+                chmod 644 /usr/local/CyberCP/.env 2>/dev/null
             fi
             chmod 644 /etc/cyberpanel/mysqlPassword 2>/dev/null
             systemctl restart lscpd 2>/dev/null
@@ -365,7 +619,188 @@ chmod +x "$CONTROL_WORK/install.sh" "$CONTROL_WORK/cyberpanel.sh"
         fi
 
         # ── Sync /usr/local/CyberCP to staging volume AFTER all fixes ──
-        if [ -d "$PERSIST_DIR" ]; then
+        # First apply HCOS template customizations from CONTROL mount
+        echo "[entrypoint] Applying HCOS template customizations from CONTROL..."
+        TEMPLATE_SRC="$CONTROL_WORK/baseTemplate/templates"
+        TEMPLATE_DST="/usr/local/CyberCP/baseTemplate/templates"
+        if [ -d "$TEMPLATE_SRC/baseTemplate" ] && [ -d "$TEMPLATE_DST/baseTemplate" ]; then
+            cp -f "$TEMPLATE_SRC/baseTemplate/index.html"    "$TEMPLATE_DST/baseTemplate/index.html"    2>/dev/null && echo "[entrypoint]   Applied index.html (no banners)"
+            cp -f "$TEMPLATE_SRC/baseTemplate/homePage.html" "$TEMPLATE_DST/baseTemplate/homePage.html" 2>/dev/null && echo "[entrypoint]   Applied homePage.html (clickable insights)"
+        fi
+        WF_TEMPLATE_SRC="$CONTROL_WORK/websiteFunctions/templates/websiteFunctions"
+        WF_TEMPLATE_DST="/usr/local/CyberCP/websiteFunctions/templates/websiteFunctions"
+        if [ -d "$WF_TEMPLATE_SRC" ] && [ -d "$WF_TEMPLATE_DST" ]; then
+            cp -f "$WF_TEMPLATE_SRC/wordpressManager.html" "$WF_TEMPLATE_DST/wordpressManager.html" 2>/dev/null && echo "[entrypoint]   Applied wordpressManager.html (sidebar)"
+            cp -f "$WF_TEMPLATE_SRC/backupManager.html"    "$WF_TEMPLATE_DST/backupManager.html"    2>/dev/null && echo "[entrypoint]   Applied backupManager.html (sidebar)"
+            cp -f "$WF_TEMPLATE_SRC/website.html"           "$WF_TEMPLATE_DST/website.html"           2>/dev/null && echo "[entrypoint]   Applied website.html (WP install link)"
+        fi
+        # Deploy WordPress & Backup SPA static assets from CONTROL
+        WF_STATIC_SRC="$CONTROL_WORK/websiteFunctions/static/websiteFunctions"
+        WF_STATIC_DST="/usr/local/CyberCP/public/static/websiteFunctions"
+        for spa in wordpress backups; do
+            if [ -d "$WF_STATIC_SRC/$spa/assets" ]; then
+                mkdir -p "$WF_STATIC_DST/$spa/assets"
+                cp -f "$WF_STATIC_SRC/$spa/assets/"* "$WF_STATIC_DST/$spa/assets/" 2>/dev/null
+                chown -R lscpd:lscpd "$WF_STATIC_DST/$spa/" 2>/dev/null
+                find "$WF_STATIC_DST/$spa/" -type d -exec chmod 755 {} \; 2>/dev/null
+                find "$WF_STATIC_DST/$spa/" -type f -exec chmod 644 {} \; 2>/dev/null
+                echo "[entrypoint]   Deployed $spa SPA assets"
+            fi
+        done
+        # Copy HCOS agent scripts
+        for agent in hcos_wordpress_agent.py hcos_backup_agent.py; do
+            if [ -f "$CONTROL_WORK/$agent" ]; then
+                cp -f "$CONTROL_WORK/$agent" "/usr/local/CyberCP/$agent"
+                chmod +x "/usr/local/CyberCP/$agent"
+                echo "[entrypoint]   Applied $agent"
+            fi
+        done
+        # Deploy HCOS-customized CyberPanel Python views from CONTROL
+        # These contain resource-limit display logic (reads hcos_resource_limits.json),
+        # WordPress/Backup Manager API endpoints, and other HCOS integrations.
+        for py_overlay in \
+            "baseTemplate/views.py" \
+            "websiteFunctions/views.py" \
+            "websiteFunctions/website.py"; do
+            if [ -f "$CONTROL_WORK/$py_overlay" ]; then
+                cp -f "$CONTROL_WORK/$py_overlay" "/usr/local/CyberCP/$py_overlay"
+                echo "[entrypoint]   Applied $py_overlay (HCOS customization)"
+            fi
+        done
+
+        # Deploy authz Keycloak refresh support (views, urls, middleware, settings)
+        AUTHZ_SRC="$CONTROL_WORK/authz"
+        AUTHZ_DST="/usr/local/CyberCP/authz"
+        if [ -d "$AUTHZ_SRC" ] && [ -d "$AUTHZ_DST" ]; then
+            for f in views.py urls.py middleware.py; do
+                if [ -f "$AUTHZ_SRC/$f" ]; then
+                    cp -f "$AUTHZ_SRC/$f" "$AUTHZ_DST/$f"
+                fi
+            done
+            echo "[entrypoint]   Applied authz token refresh (views, urls, middleware)"
+        fi
+        if [ -f "$CONTROL_WORK/CyberCP/settings.py" ]; then
+            cp -f "$CONTROL_WORK/CyberCP/settings.py" "/usr/local/CyberCP/CyberCP/settings.py"
+            echo "[entrypoint]   Applied CyberCP/settings.py (middleware registration)"
+        fi
+
+        # Fix applicationInstaller.py dbCreation bug (returns int instead of tuple on error)
+        APP_INSTALLER_SRC="$CONTROL_WORK/plogical/applicationInstaller.py"
+        APP_INSTALLER_DST="/usr/local/CyberCP/plogical/applicationInstaller.py"
+        if [ -f "$APP_INSTALLER_SRC" ] && [ -d "$(dirname $APP_INSTALLER_DST)" ]; then
+            cp -f "$APP_INSTALLER_SRC" "$APP_INSTALLER_DST"
+            echo "[entrypoint]   Applied applicationInstaller.py (dbCreation fix)"
+        fi
+
+        # Ensure HCOS server ID file exists for Backup/WordPress Manager SPAs
+        if [ ! -f /etc/cyberpanel/hcos_server_id ]; then
+            echo '1' > /etc/cyberpanel/hcos_server_id
+            echo "[entrypoint] Created /etc/cyberpanel/hcos_server_id = 1"
+        fi
+
+        # Ensure 'php' is in PATH for wp-cli
+        if ! command -v php &>/dev/null; then
+            for v in 84 83 82 81 80 74; do
+                if [ -x "/usr/local/lsws/lsphp${v}/bin/php" ]; then
+                    ln -sf "/usr/local/lsws/lsphp${v}/bin/php" /usr/local/bin/php
+                    echo "[entrypoint] Created php symlink → lsphp${v}/bin/php"
+                    break
+                elif [ -x "/usr/local/lsws/lsphp${v}/bin/lsphp" ]; then
+                    ln -sf "/usr/local/lsws/lsphp${v}/bin/lsphp" /usr/local/bin/php
+                    echo "[entrypoint] Created php symlink → lsphp${v}/bin/lsphp"
+                    break
+                fi
+            done
+        fi
+
+        # Ensure sudoers secure_path includes /usr/local/bin (for wp-cli php symlink)
+        if [ -f /etc/sudoers ] && ! grep -q '/usr/local/bin' /etc/sudoers; then
+            sed -i 's|^Defaults\s*secure_path\s*=.*|Defaults    secure_path = /usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin|' /etc/sudoers
+            echo "[entrypoint] Fixed sudoers secure_path to include /usr/local/bin"
+        fi
+
+        # Install wp-cli if not present (required by hcos_wordpress_agent.py)
+        if [ ! -x /usr/local/bin/wp ]; then
+            echo "[entrypoint] Installing wp-cli..."
+            curl -sS https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /usr/local/bin/wp \
+                && chmod +x /usr/local/bin/wp \
+                && echo "[entrypoint] wp-cli installed ($(wp --version --allow-root 2>/dev/null || echo unknown))" \
+                || echo "[entrypoint] WARNING: wp-cli download failed"
+        fi
+
+        # Ensure static files are not violating lscpd security policy
+        if [ -d "/usr/local/CyberCP/public/static" ]; then
+            echo "[entrypoint] Applying HCOS restricted bits policy for lscpd static maps before sync..."
+            chown -R lscpd:lscpd "/usr/local/CyberCP/public/static" 2>/dev/null || true
+            find "/usr/local/CyberCP/public/static" -type d -exec chmod 755 {} \; 2>/dev/null || true
+            find "/usr/local/CyberCP/public/static" -type f -exec chmod 644 {} \; 2>/dev/null || true
+        fi
+
+        # ── Re-sync MySQL password AFTER overlay (settings.py may use a different default) ──
+        SETTINGS_PW=$(python3 -c "
+import re, os
+with open('/usr/local/CyberCP/CyberCP/settings.py') as f:
+    m = re.search(r\"'PASSWORD'\\s*:\\s*os\\.getenv\\([^,]+,\\s*'([^']+)'\\)\", f.read())
+    print(m.group(1) if m else '')
+" 2>/dev/null)
+        if [ -n "$SETTINGS_PW" ]; then
+            CUR_PW=$(cat /etc/cyberpanel/mysqlPassword 2>/dev/null | tr -d '[:space:]')
+            if [ "$SETTINGS_PW" != "$CUR_PW" ]; then
+                echo "[entrypoint] Re-syncing MySQL passwords after overlay (settings.py default differs from mysqlPassword file)..."
+                mysql -u root -e "ALTER USER 'cyberpanel'@'localhost' IDENTIFIED BY '$SETTINGS_PW'; ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket OR mysql_native_password USING PASSWORD('$SETTINGS_PW'); FLUSH PRIVILEGES;" 2>/dev/null
+                echo -n "$SETTINGS_PW" > /etc/cyberpanel/mysqlPassword
+                chmod 644 /etc/cyberpanel/mysqlPassword 2>/dev/null
+                systemctl restart lscpd 2>/dev/null
+                echo "[entrypoint] MySQL password re-synced to match settings.py."
+            fi
+        fi
+
+        # ── Install and configure PowerDNS (authoritative DNS for hosted zones) ──
+        OFFLINE_REPO_COLD="$CONTROL_WORK/offline/repos/el9/packages"
+        if ! command -v pdns_server &>/dev/null; then
+            echo "[entrypoint] Installing PowerDNS from offline repo..."
+            rpm -ivh --nodeps --force \
+                "$OFFLINE_REPO_COLD"/pdns-4.8.4-*.rpm \
+                "$OFFLINE_REPO_COLD"/pdns-backend-mysql-4.8.4-*.rpm \
+                2>&1 | tail -5 || true
+        fi
+        if command -v pdns_server &>/dev/null; then
+            PDNS_PW_COLD=$(cat /etc/cyberpanel/mysqlPassword 2>/dev/null | tr -d '[:space:]')
+            cat > /etc/pdns/pdns.conf << PDNSEOF
+# PowerDNS configuration — managed by cyberpanel-entrypoint.sh
+launch=gmysql
+gmysql-host=127.0.0.1
+gmysql-port=3306
+gmysql-dbname=cyberpanel
+gmysql-user=root
+gmysql-password=$PDNS_PW_COLD
+setuid=pdns
+setgid=pdns
+local-address=0.0.0.0
+local-port=53
+api=yes
+api-key=hcos-pdns-internal-key
+webserver=yes
+webserver-address=0.0.0.0
+webserver-port=8081
+webserver-allow-from=0.0.0.0/0,::0/0
+log-dns-details=no
+loglevel=3
+PDNSEOF
+            chmod 640 /etc/pdns/pdns.conf
+            chown root:pdns /etc/pdns/pdns.conf 2>/dev/null || true
+            systemctl enable pdns 2>/dev/null || true
+            systemctl restart pdns 2>/dev/null || true
+            echo "[entrypoint] PowerDNS: $(systemctl is-active pdns)"
+
+            # Ensure PowerDNS 4.8 schema compatibility (older CyberPanel tables may lack columns)
+            mysql -u root -e "ALTER TABLE cyberpanel.domains ADD COLUMN options TEXT DEFAULT NULL;" 2>/dev/null || true
+            mysql -u root -e "ALTER TABLE cyberpanel.domains ADD COLUMN catalog VARCHAR(255) DEFAULT NULL;" 2>/dev/null || true
+            # Fix unquoted TXT records (CyberPanel creates them without quotes but PDNS 4.8 requires them)
+            mysql -u root -e "UPDATE cyberpanel.records SET content = CONCAT('\"', content, '\"') WHERE type='TXT' AND content NOT LIKE '\"%%';" 2>/dev/null || true
+        fi
+
+                if [ -d "$PERSIST_DIR" ]; then
             echo "[entrypoint] Syncing CyberCP to staging volume..."
             rsync -a --delete /usr/local/CyberCP/ "$PERSIST_DIR/"
             echo "[entrypoint] Synced $(du -sh "$PERSIST_DIR/" | cut -f1) to staging volume."
@@ -394,3 +829,4 @@ chmod +x "$CONTROL_WORK/install.sh" "$CONTROL_WORK/cyberpanel.sh"
 
 # -- Hand off to systemd --
 exec /usr/sbin/init
+
