@@ -167,6 +167,13 @@ REPOEOF
 
         echo "[warm-start] RPMs installed. $(rpm -qa | wc -l) total packages."
 
+        # ── Fix Python dependencies (lost on container recreation) ──
+        echo "[warm-start] Re-installing Python dependencies..."
+        dnf install -y --skip-broken python3-devel gcc MariaDB-devel zlib-devel openssl-devel
+        pip3 install Django==3.2.19 mysqlclient==2.1.1 djangorestframework==3.14.0
+        pip3 install -r /usr/local/CyberCP/requirments.txt 2>/dev/null || true
+        pip3 install Django==3.2.19 mysqlclient==2.1.1 djangorestframework==3.14.0 --force-reinstall
+
         # ── Recreate system users/groups if missing ──
         id -u cyberpanel &>/dev/null 2>&1 || useradd -r -d /usr/local/CyberCP cyberpanel 2>/dev/null
         id -u lscpd &>/dev/null 2>&1    || useradd -r -s /sbin/nologin -d /usr/local/lscp lscpd 2>/dev/null
