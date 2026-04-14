@@ -436,6 +436,28 @@ REPOEOF
         echo "[warm-start] Starting lscpd..."
         systemctl restart lscpd 2>/dev/null
         sleep 3
+
+        # ── Ensure OLS SSL listener has a valid default cert ──
+        # The OLS SSL listener references a default cert (the first website's LE cert).
+        # If that cert doesn't exist (e.g. domain was test-only), OLS skips port 443 entirely.
+        # Generate a self-signed fallback so the listener can always bind.
+        OLS_CONF_FILE="/usr/local/lsws/conf/httpd_config.conf"
+        if [ -f "$OLS_CONF_FILE" ]; then
+            OLS_SSL_CERT=$(grep -A5 'listener SSL' "$OLS_CONF_FILE" | grep 'certFile' | head -1 | awk '{print $2}')
+            OLS_SSL_KEY=$(grep -A5 'listener SSL' "$OLS_CONF_FILE" | grep 'keyFile' | head -1 | awk '{print $2}')
+            if [ -n "$OLS_SSL_CERT" ] && [ ! -f "$OLS_SSL_CERT" ]; then
+                echo "[warm-start] OLS SSL listener cert missing ($OLS_SSL_CERT). Generating self-signed fallback..."
+                mkdir -p "$(dirname "$OLS_SSL_CERT")"
+                mkdir -p "$(dirname "$OLS_SSL_KEY")"
+                openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+                    -keyout "$OLS_SSL_KEY" \
+                    -out "$OLS_SSL_CERT" \
+                    -subj "/CN=$(basename $(dirname $OLS_SSL_CERT))" 2>/dev/null
+                chmod 600 "$OLS_SSL_KEY"
+                echo "[warm-start] Generated fallback SSL cert for OLS listener."
+            fi
+        fi
+
         echo "[warm-start] Starting OpenLiteSpeed..."
         systemctl start openlitespeed 2>/dev/null
 
