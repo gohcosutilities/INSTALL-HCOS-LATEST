@@ -368,6 +368,16 @@ REPOEOF
         systemctl daemon-reload
         systemctl enable mariadb lscpd openlitespeed 2>/dev/null || true
 
+        # ── Create 'lsws' service alias for CyberPanel compatibility ──
+        # CyberPanel's reStartLiteSpeed() calls 'systemctl restart lsws',
+        # but the service is registered as 'openlitespeed'. Without this
+        # symlink, OLS never reloads after website creation/changes.
+        if [ ! -e /etc/systemd/system/lsws.service ]; then
+            ln -sf /etc/systemd/system/openlitespeed.service /etc/systemd/system/lsws.service
+            systemctl daemon-reload
+            echo "[warm-start] Created lsws.service alias → openlitespeed.service"
+        fi
+
         # ── Start MariaDB ──
         echo "[warm-start] Starting MariaDB..."
         systemctl start mariadb 2>/dev/null || {
@@ -588,6 +598,13 @@ chmod +x "$CONTROL_WORK/install.sh" "$CONTROL_WORK/cyberpanel.sh"
         # ── Save OLS service file for warm-start re-registration ──
         if [ -f /etc/systemd/system/openlitespeed.service ]; then
             cp -f /etc/systemd/system/openlitespeed.service /usr/local/lsws/openlitespeed.service.bak
+        fi
+
+        # ── Create 'lsws' service alias for CyberPanel compatibility ──
+        if [ ! -e /etc/systemd/system/lsws.service ]; then
+            ln -sf /etc/systemd/system/openlitespeed.service /etc/systemd/system/lsws.service
+            systemctl daemon-reload
+            echo "[entrypoint] Created lsws.service alias → openlitespeed.service"
         fi
 
         # ── Fix virtualenv python symlink to use system python (survives container recreation) ──
