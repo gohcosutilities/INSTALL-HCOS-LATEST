@@ -82,7 +82,7 @@ if [ -f "$INSTALL_MARKER" ] && [ -f "$PERSIST_DIR/CyberCP/wsgi.py" ]; then
         fi
     done
     # Copy HCOS agent scripts
-    for agent in hcos_wordpress_agent.py hcos_backup_agent.py hcos_permission_agent.py; do
+    for agent in hcos_wordpress_agent.py hcos_backup_agent.py; do
         if [ -f "$CONTROL_MOUNT/$agent" ]; then
             cp -f "$CONTROL_MOUNT/$agent" "/usr/local/CyberCP/$agent"
             chmod +x "/usr/local/CyberCP/$agent"
@@ -154,13 +154,6 @@ if [ -f "$INSTALL_MARKER" ] && [ -f "$PERSIST_DIR/CyberCP/wsgi.py" ]; then
         echo "[warm-start] Fixed sudoers secure_path to include /usr/local/bin"
     fi
 
-    # Ensure cyberpanel user can run sudo without password
-    if [ ! -f /etc/sudoers.d/cyberpanel ]; then
-        echo "cyberpanel ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/cyberpanel
-        chmod 440 /etc/sudoers.d/cyberpanel
-        echo "[warm-start] Created /etc/sudoers.d/cyberpanel"
-    fi
-
     # Install wp-cli if not present (required by hcos_wordpress_agent.py)
     if [ ! -x /usr/local/bin/wp ]; then
         echo "[warm-start] Installing wp-cli..."
@@ -178,12 +171,12 @@ if [ -f "$INSTALL_MARKER" ] && [ -f "$PERSIST_DIR/CyberCP/wsgi.py" ]; then
 
     # Fix virtualenv python symlinks — /usr/local/CyberPanel/ doesn't survive container recreation
     SYS_PYTHON=$(readlink -f /usr/bin/python3)
-    if [ ! -e /usr/local/CyberCP/bin/python3 ]; then
+    if [ -L /usr/local/CyberCP/bin/python3 ] && ! [ -e /usr/local/CyberCP/bin/python3 ]; then
         echo "[warm-start] Fixing virtualenv python3 symlink..."
         rm -f /usr/local/CyberCP/bin/python3
         ln -sf "$SYS_PYTHON" /usr/local/CyberCP/bin/python3
     fi
-    if [ ! -e /usr/local/CyberCP/bin/python ]; then
+    if [ -L /usr/local/CyberCP/bin/python ] && ! [ -e /usr/local/CyberCP/bin/python ]; then
         echo "[warm-start] Fixing virtualenv python symlink..."
         rm -f /usr/local/CyberCP/bin/python
         ln -sf "$SYS_PYTHON" /usr/local/CyberCP/bin/python
@@ -344,7 +337,7 @@ REPOEOF
         # ── Create /home/cyberpanel/ (used for temp status files by virtualHostUtilities) ──
         mkdir -p /home/cyberpanel
         chown cyberpanel:cyberpanel /home/cyberpanel
-        chmod 700 /home/cyberpanel
+        chmod 755 /home/cyberpanel
 
         # ── Recreate website system users and home directories from DB ──
         # MariaDB data volume persists across container recreation, but /etc/passwd does not.
@@ -605,6 +598,11 @@ EOF
         # Password will be properly set in the password fix block below
         mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket; FLUSH PRIVILEGES;" 2>/dev/null || true
 
+        # ── Create /home/cyberpanel/ (used for temp status files by virtualHostUtilities) ──
+        mkdir -p /home/cyberpanel
+        chown cyberpanel:cyberpanel /home/cyberpanel
+        chmod 755 /home/cyberpanel
+
         # ── Auto-fix MySQL password (avoids the 500 error on first login) ──
         echo "[entrypoint] Fixing MySQL 'cyberpanel' user password..."
         MYSQL_PW=""
@@ -655,7 +653,7 @@ EOF
             fi
         done
         # Copy HCOS agent scripts
-        for agent in hcos_wordpress_agent.py hcos_backup_agent.py hcos_permission_agent.py; do
+        for agent in hcos_wordpress_agent.py hcos_backup_agent.py; do
             if [ -f "$CONTROL_WORK/$agent" ]; then
                 cp -f "$CONTROL_WORK/$agent" "/usr/local/CyberCP/$agent"
                 chmod +x "/usr/local/CyberCP/$agent"
@@ -724,13 +722,6 @@ EOF
         if [ -f /etc/sudoers ] && ! grep -q '/usr/local/bin' /etc/sudoers; then
             sed -i 's|^Defaults\s*secure_path\s*=.*|Defaults    secure_path = /usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin|' /etc/sudoers
             echo "[entrypoint] Fixed sudoers secure_path to include /usr/local/bin"
-        fi
-
-        # Ensure cyberpanel user can run sudo without password
-        if [ ! -f /etc/sudoers.d/cyberpanel ]; then
-            echo "cyberpanel ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/cyberpanel
-            chmod 440 /etc/sudoers.d/cyberpanel
-            echo "[entrypoint] Created /etc/sudoers.d/cyberpanel"
         fi
 
         # Install wp-cli if not present (required by hcos_wordpress_agent.py)
